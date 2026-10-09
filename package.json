@@ -1,0 +1,57 @@
+{
+  "name": "dsh-backroom",
+  "description": "DeepSeek Harness (dsh) plugin: a read-only back room for plugin authors — the host's own log buffer made readable, plus a live reachability probe of the official service faces.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Ruler4396",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "tools",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/probe-shape.mjs && node test/fault-triage.mjs",
+    "fault-triage": "node tools/fault-triage.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "compatibility": {
+      "dsh": ">=0.2.0",
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LEEKINBUN-dsh-tools/dsh-backroom.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LEEKINBUN-dsh-tools/dsh-backroom/issues"
+  },
+  "homepage": "https://github.com/LEEKINBUN-dsh-tools/dsh-backroom#readme",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "debugging",
+    "observability"
+  ]
+}

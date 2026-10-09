@@ -1,0 +1,11 @@
+# 源文件一律 LF 入库（Windows 上的 autocrlf 会把它们变成 CRLF，diff 与 sha 都会漂）
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+.gitignore text eol=lf
+# 崩溃件夹具：**逐字节**是判据的一部分，禁止任何换行转换（否则 #105/#106 的 sha 核对会漂）
+*.log -text
+# PowerShell 5.1 读 UTF-8 无 BOM 的 CRLF 最稳（#102：含中文会在解析期死）
+*.ps1 text eol=crlf

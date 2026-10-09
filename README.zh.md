@@ -1,0 +1,143 @@
+# dsh-backroom（后台间）
+
+给 DeepSeek Harness（`dsh`）**插件作者**用的一间只读后台：把宿主自己那本没人读的日志缓冲，用循环口 HTTP 端点摊开；并且在**正在跑的那枚进程里**现场回答一件事——插件到底够得到官面哪些服务面。
+
+本插件是社区件，不是 DeepSeek AI 官方产品。
+
+## 为什么需要它
+
+装机桌面端（0.2.0-rc.2）上缺的两样东西，都不是"官方没开放接口"：
+
+- **宿主日志没人读。** `ctx.logger` 自带的唯一出口是 cordis 那本 1000 条内存环形缓冲（`logger.buffer`），而发行物里只有"启动致命失败"那一条路注册过第二枚 sink。宿主代码走 logger 不走 console（光 `dsh-hmr` 就打 19 发 logger），装机版后端子进程的 stdout 又被 pipe 进 GUI 进程丢掉 ⇒ 于是"插件装了但没动静"这种现场**一条凭据都没有**。
+- **可达性当年只量过一次、且记错了。** `ctx.get('sessionController')` 在插件纤维里到底能不能取到，是由**正在跑的进程**决定的，不是 `.d.ts` 决定的。本插件用一枚活体矩阵回答它，而不是拿猜测当结论。
+
+## 它做什么
+
+当前这一版是**探针档＋失败归因档＋会话窄口**：只有宿主半、四枚端点（前三枚只读，第四枚默认全关、要两枚 env 才放行），没有 UI，插件自身不写盘。
+
+| 端点 | 回什么 |
+|---|---|
+| `GET /dsh-backroom/probe` | 逐枚服务面矩阵：每个名字把 `ctx.get(name, true)` 与 `ctx.get(name, false)` **分开**报成 `present(<类型>)` / `absent` / `threw: <原文>`，并列出该面自己的方法名；声明过与未声明依赖的属性访问结果各记一发；`hmr.getLinked()` 原样带出；**本插件 apply 之前缓冲里已有几条**（这一发就是"能不能回放"的判决）；node 版本、argv、`DSH_*` 变量**名**（不给值）、`ctx.fiber.state`。 |
+| `GET /dsh-backroom/logs?limit=&level=&contains=` | 日志尾：自 apply 起 `ctx.logger` 打的**全部**，外加插件们的 `console.error/warn`。`level` 收 `error|info|warn|debug` 也收官面数值档 0..3。环形上限 4000 条，并如实报丢了几条。 |
+| `GET /dsh-backroom/faults?limit=&dir=` | **崩溃归因**：读桌面端那两类崩溃件（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`／`-renderer.log`），逐份回"哪一枚**装侧包**的哪一帧（嫌疑）＋官面哪一帧抛的（它误触的那枚方法）＋成因行 `dsh: fatal …: TypeError [ERR_INVALID_ARG_TYPE] …` 与包裹行分开"；归不出嫌疑包的那份**各回各原因**（`renderer-crash`／`no-stack`／`no-installed-bundle-frame`），不硬捏。默认根＝桌面端那一棵；CLI 临时实例用 `DSH_BACKROOM_CRASH_LOGS=<目录>` 指开。`dir` 只准落在白名单根内（这枚端点免鉴权，不能当本机任意文件的读 oracle），越界回 **403**。 |
+| `GET`/`POST /dsh-backroom/session?session=&key=` | **会话窄口（默认全关）**：GET 读一枚登记会话的回合面——读的是官面投影袋里**确实在册**的两枚（`turnOutline` 回合数组、`sessionStats.turns`），回包给 `turnCount/lastTurn/lastResponseChars/asOfSeq/readable`；POST 往那枚**已登记的**会话发一条 prompt，`&wait=turn-end&timeoutMs=…` 等到"多出一回合且那一回合的 `response` 被 `turn/end` 填上"，回 `ended/endedClaim/turnStarted/assistantResponded/waitedMs`。只走官面 handler（`sessionController.prompt/projections`，**两枚参数 `request, signal`**）。10-09 桌面端端到端：一发 prompt 前后 `turnCount 1→2`、`asOfSeq 19→30`，日志里对应两条 `turn/end reason:"completed"`、回复两条。读不到判据时端点自报 `endedClaim:"unreadable"`，不把手上没证据写成"没结束"。⚠ 旧写法"读 `turnBoundary.lastTurn`"是猜的、实测**不在公共袋里**，已改判（正文＝`docs/PLUGIN-RULES.md` §H.5） |
+
+### 先说清"窄口"是什么（这是一句行话，换成白话）
+
+**"窄口"＝一扇默认锁着的门，只在满足三个条件时才打开一条很细的缝。**
+
+这个插件本来是三枚**只读**端点（看一眼日志、看一眼崩溃件，什么都不改）。第四枚不一样：它能**往你的会话里发一条消息**，也就是会动你的东西、会花你的额度。所以它不是"开着但劝你别乱用"，而是**默认根本不响应**：
+
+1. 启动 dsh 时没设 `DSH_BACKROOM_SESSION_KEY` ⇒ 问什么都是 `403 disabled`，等于这枚端点不存在；
+2. 设了 key，但你要发消息的那枚会话**不在 `DSH_BACKROOM_SESSION_ALLOW` 名单里** ⇒ `403 not-allowlisted`（它绝不会"帮你挑最近一枚会话"，也绝不新建会话）；
+3. 两道都过了，还有限速（每分钟 6 发）、限长（4000 字／16 KB）、限时（等待最多 120 秒）。
+
+"窄"体现在：**只能对指定会话发文本，只能读它跑完没有**——不能建会话、不能切模型、不能取消、不能改队列、不碰 token。要更宽的能力得改代码，改代码就会被那套哨兵挡住（第 15 步会把"env 名字少一枚""多一个调用点""出现 create"直接判红）。
+
+**日常怎么用（安全优先，也省事）**
+
+- 平时：照常点图标启动 dsh。门是关的，三枚只读端点照用。
+- 要发那一发时：跑一次启动器，它现铸一枚一次性 key 打印出来（不落盘、不进注册表、退出就没了）。
+
+```powershell
+powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 -Sid <你的会话id>
+# → use this key for this run: 546bb02911b9…（每次都不一样）
+# → 然后按它打印的那行 curl 直接用
+```
+
+- 不常驻的理由：常驻要把 key 写进用户环境变量，那份明文对本机任意进程、漫游备份都可见。不常驻买到的是**默认关闭**＋**key 不落盘**，不是绝对安全（能读你环境变量的进程本来也读得到你的 cookie）——所以它是"更小的暴露面"。
+- `-Sid` 建议填一枚**专门当靶子的空会话**，用完从名单里摘掉就是关门。
+
+
+```bash
+# 启动 dsh 之前设（不设＝这枚端点等于不存在）
+DSH_BACKROOM_SESSION_KEY=一把本地密钥
+DSH_BACKROOM_SESSION_ALLOW=<sessionId1,sessionId2>
+curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=…&session=<登记的 sid>&wait=turn-end&timeoutMs=60000" \
+     -H 'content-type: application/json' -d '{"text":"只回一个字：好"}'
+```
+
+| 闸 | 行为 |
+|---|---|
+| 1 | `DSH_BACKROOM_SESSION_KEY` 未设 ⇒ `403 disabled`（一枚都不放行，也不报错——等于不存在） |
+| 2 | `?key=` 与 env 逐字**等时**比较（`crypto.timingSafeEqual`），不符 ⇒ `403 bad-key` |
+| 3 | `sessionId` 必须在 `DSH_BACKROOM_SESSION_ALLOW` 名单里 ⇒ 否则 `403 not-allowlisted`；**绝不新建会话**（`create` 在哨兵里是红的），也绝不"挑最近一枚" |
+| 4 | 速率：每分钟默认 **6** 发，超额 `429 rate-limited` 并计数（阈值要改大得留来源注） |
+| 5 | 边界：body ≤16 KB、text ≤4000 字符、等待 ≤120 s（`timeoutMs` 被夹在 2 s–120 s）；等待是**带 deadline 的界内轮询＋回包带前后读数**，不用固定等待换确定性 |
+
+拒绝按原因分档计数留在 `probe`/回包里（`session.denied`），不静默吞。**这一格花的是你的模型额度**，所以三件事绝不做：不铸 token（`authenticatedUrl` 哨兵照旧）、不新建会话、不绕过 allowlist。
+
+
+四枚路由都经 `webServer.register()` 挂在**插件自己的前缀**上，所以不需要应用的会话 cookie 就能读（与 `/dsh-chamber/*` 同形），并带 `Cache-Control: no-store`。**前三枚只读**（`probe`／`logs`／`faults` 只读内存与文件，不写盘、不动会话）；**第四枚 `session` 会花你的额度**，所以它默认关、要两枚 env 才放行，形状见下面那把闸表——这是本插件唯一"动手"的地方。
+
+```bash
+curl -s http://127.0.0.1:19387/dsh-backroom/probe | head -c 4000
+curl -s "http://127.0.0.1:19387/dsh-backroom/logs?limit=50&level=warn"
+curl -s "http://127.0.0.1:19387/dsh-backroom/faults?limit=8"
+```
+
+### 摘掉那枚坏插件（走命令行，不走端点）
+
+`tools/fault-triage.mjs`（正本；顶层 `tools/dsh-fault-triage.mjs` 是一行转发壳）——**归因＋隔离**，与 `faults` 端点共用同一份逻辑，不留第二套真相源：
+
+```bash
+node tools/dsh-fault-triage.mjs scan --logs "%APPDATA%\@deepseek-ai\dsh-desktop\logs" --source-root E:\dsh-plugins
+node tools/dsh-fault-triage.mjs quarantine --bundle auto --profile-dir ~/.dsh/profiles/desktop   # 默认 dry-run
+node tools/dsh-fault-triage.mjs quarantine --bundle auto --profile-dir … --logs … --apply        # 才写盘
+node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>                          # 逐字节回原
+```
+
+- `quarantine` 的语义＝PLUGIN-RULES §C8 的"屏蔽"：**只把包摘出 `dsh.profile.bundles`**，dependency 与安装副本都留着；写之前把原文件逐字备份到**工作区外**（默认 `%TEMP%\dsh-fault-quarantine`），回包带 `backupSha`/`afterSha` 与 restore 命令。
+- 两枚闸是硬的：`@deepseek-ai/dsh-base`／`dsh-web-app` 在受保护名单里（拒），不在名册里的名字也拒；被拒的那一发**一个字节都不动**（套件第 08 步量的就是这一格）。
+- **生效力度（10-05 实测，别写成免重启）**：这枚工具改的是盘上名册，而名册在**启动时**才组合 ⇒ **要重启**。同一发实验里官方 `pluginManager.setBundleEnabled` 在 CLI `web` 档回的是 `application:"failed"` ＋ `"dsh: profile reload requires the root Include entry"`（盘上改了、纤维没卸）——细节与档位见 `PITFALLS.md` #105 与 `docs/PLUGIN-RULES.md` §H.6 档 1。桌面端是否"live profile"＝**未测**。
+
+## 刻意不做的三件事
+
+- **绝不调用 `connection.authenticatedUrl()`。** 那一枚能铸出带 `?token=` 的 URL，而它只要被兑换一次，就变成了对全部 29 本已发布 `/api` 命名空间的**读写**钥匙。这把钥匙被有意留在宿主进程内：本插件只报"够不够得到"，绝不把钥匙交出去。这条不是注释里的愿望——`test/probe-shape.mjs` 里有一枚会**真的红**的哨兵盯着它。
+- **会话那一格按 10-05 的裁定开成了窄口**（原裁定是"绝不碰任何会话"，用户当日改判「开全套窄口」⇒ 现在是"只对登记的会话发 prompt＋读回合面"）。仍然绝不做的是：不 `Session.append` 自定义事件类型（那会毒化整份 durable 日志，PITFALLS #1）、不 `create` 新会话、不 cancel、不切模型、不动队列、不铸 token。发出去的每一发都留痕（`requestId`＋时刻＋拒绝原因分档计数）。
+- **绝不杀/重启宿主、前三枚端点绝不写盘、这一版不放任何 UI 席位**（没有 `<style>`、没有面板、没有侧栏入口）。`faults` 那枚**只读**崩溃件目录；唯一会写盘的是命令行里的 `quarantine --apply`，它只动 `dsh.profile.bundles` 那一行、写前先在工作区外逐字备份、且默认是 dry-run。
+
+## 运行要求
+
+- 实测目标 dsh **0.2.0-rc.2**；宿主半是纯 ESM，只用 `node:util`／`node:fs`／`node:path` 三枚内置模块，无第三方依赖。归因逻辑住在本包 `tools/fault-triage.mjs`（已进 `package.json` 的 `files`，`file:` 拷贝才会带上它——少了那枚文件整包 import 失败）。
+- 一个会加载 bundle 的 profile（`desktop` / `web`）。
+
+## 安装
+
+1. 把本目录放在一个稳定位置，例如 `C:\plugins\dsh-backroom`。
+2. 在 `~/.dsh/profiles/<profile>/package.json` 里同时加两行：
+
+   ```jsonc
+   {
+     "dependencies": { "dsh-backroom": "file:C:/plugins/dsh-backroom" },
+     "dsh": { "profile": { "bundles": [ /* …已有 bundle…, */ "dsh-backroom" ] } }
+   }
+   ```
+
+3. 用 dsh 自带的 pnpm 安装，然后重启 dsh —— bundle 组合只在启动时解析一次，刷新页面不够：
+
+   ```powershell
+   Remove-Item -Recurse -Force "$env:USERPROFILE\.dsh\profiles\<profile>\node_modules\dsh-backroom"
+   pnpm install --dir "$env:USERPROFILE\.dsh\profiles\<profile>"
+   ```
+
+   `file:` 装进来的是**拷贝不是链接**：改了源码不会自己传过去。校验办法是逐枚比对 `lib/**` 的字节数与 sha256（源码树 vs 安装副本）。
+
+## 卸载
+
+删掉上面两行 manifest 条目、删 `node_modules\dsh-backroom`、`pnpm install --dir <profile>`、重启。只想"屏蔽"的话：把 `bundles` 那一行摘掉即可（保留 dependency 与安装副本）。
+
+## 配置
+
+探针档没有面向用户的配置命名空间。
+
+## 已知边界
+
+- **夹具绿 ≠ 真宿主读数。** `test/probe-shape.mjs` 跑在假 ctx / 真 `console` 对象上，证的是注册、过滤、环形上限、还原与红线哨兵；它**不**证明任何关于正在跑的宿主的事实——那些只能来自 `GET /dsh-backroom/probe`，而且那一档是**端点回包**，永远不等于屏上帧。
+- 日志尾从本插件 `apply()` 那一刻起算。更早的启动期日志能不能看到，取决于探针报的那一发"注册时缓冲里已有几条"（10-04 真宿主＝1 条，而那条正是早于我们 apply 的 `dsh-chamber` 行 ⇒ 缓冲确实能带回放），本插件不去伪造它没看见的东西。
+- **探针「只问名字，不动手」**（10-04 事故换来的第一条，正文 `PITFALLS.md #103`、约束 `docs/PLUGIN-RULES.md` §E5）：对外来的官面服务面，本插件只取 `typeof` 与方法名清单，**不调用它们的任何方法**。起因是我自己从探针里调了 `hmr.getLinked()`——那枚方法只在 ESM loader 钩子的现场成立，从 HTTP 处理器里调它会拿 `undefined` 当 url 走 `LoadCache.get`，**抛发生在 loader 的 tick 上、本端 try/catch 拦不到**，后端直接 `dsh: fatal load failure` 退出。探针里那一格现在写成 `not-called（…）` 的说明串，并由套件第 15 步用"出现 `getLinked(` 就红"的哨兵钉住。
+- **捕获面有三把界，这是同一次事故的第二条**（约束 §E5b）：① 只接管 `console.error`／`console.warn`——热路径 `log/info/debug` 不接（实测那一帧 28 行里 26 行走 `console.info`，`deepseek-account` 每发请求两发响应各一条）；② 速率闸 **200 条/秒**，超额丢弃并计数，`/logs` 回包里的 `rate` 格把 `reentrantSkips`／`rateDropped`／`captureErrors` 原样带出来；③ 逐参数封顶 **512 字符**、单条 **600 字符**，先各自 slice 再拼，不对整条渲染结果做全局正则。另有**重入闸**：渲染过程中再进来的那一发直接跳过（`util.inspect` 会调用对象自己的 `[util.inspect.custom]`，那里再打一条日志就是自递归）。注意：这三把界是卫生，**不是那次退出的成因**——成因是上面那条越界调用。
+- 所以这一档**是有意的近似**：洪峰期间的日志会被丢弃并计入 `rateDropped`。要完整取证就缩小窗口（`limit`／`contains`／`level`），别拿它当审计账本。
+- 环形尾由导出的 `createRing(limit)` 实现，默认 4000；淘汰算术在套件里用 `limit=5` 小规模直证——既不靠睡 21 秒填满，也不把默认值调大来凑测试。
+- **当前状态（10-09）**：这枚插件**装在用户自己的桌面端 profile 里并跑通了**（0.2.0-rc.2，后端 19387）。四枚端点全部实测应答；会话入口在真机端到端跑过两发 prompt，端点读数与独立介质（会话日志里的 `turn/end {reason:"completed"}`）逐一对上。开发期验证一律在**仓外临时实例**（自有 `DSH_HOME`、自有端口）做；19387 只在被授权的同步／重启里被动过——**改完源码要加载新字节仍需重启一次**，这是"会动手的那枚端点"带来的成本。
+- 端点免 cookie（本机任意进程可读）。里面不含 token、不含路径之外的敏感值，`DSH_*` 只给名字不给值。

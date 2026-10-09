@@ -1,0 +1,6 @@
+# dsh-backroom bundle patch: mount the plugin under its row id,
+# resolved through the profile's node_modules.
+# 行 id = 本包 export const name = 'backroom'（配置命名空间按行 id 走，见 RULES §D3）。
+- insert:
+    - id: backroom
+      name: dsh-backroom
