@@ -1,0 +1,34 @@
+time: 2026-10-04T15:09:04.700Z
+source: host
+phase: running
+app: @deepseek-ai/dsh-desktop 0.2.0-rc.2
+platform: win32 x64
+electron: 44.0.0
+node: 24.18.1
+locale: zh-CN
+shell pid: 7288
+
+--- error ---
+Error: dsh desktop host exited with 1: (node:26164) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
+(Use `DeepSeek Harness --trace-deprecation ...` to show where the warning was created)
+dsh: fatal load failure: TypeError [ERR_INVALID_ARG_TYPE]: The "url" argument must be of type string. Received undefined
+    at LoadCache.get (node:internal/modules/esm/module_map:95:5)
+    at Proxy.getLinked (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-hmr/lib/index.js:462:40)
+    at Object.apply (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:120:36)
+    at buildProbe (file:///C:/Users/sampleuser/.dsh/profiles/desktop/node_modules/dsh-backroom/lib/index.js:290:29)
+    at Object.probeHandler [as handler] (file:///C:/Users/sampleuser/.dsh/profiles/desktop/node_modules/dsh-backroom/lib/index.js:363:23)
+    at handle (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:235:17)
+    at next (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:248:5)
+    at compression (C:\Users\sampleuser\AppData\Local\Programs\DeepSeek Harness\resources\app.asar\dsh\node_modules\compression\index.js:265:5)
+    at WebServer.gzip (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:129:3)
+    at Server.<anonymous> (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:259:14) {
+  code: 'ERR_INVALID_ARG_TYPE'
+}
+    at ChildProcess.<anonymous> (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/lib/main.js:3724:64)
+    at Object.onceWrapper (node:events:631:26)
+    at ChildProcess.emit (node:events:509:28)
+    at maybeClose (node:internal/child_process:1124:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:306:5)
+
+--- renderer console (error level, oldest first) ---
+(no error-level renderer console output was captured)

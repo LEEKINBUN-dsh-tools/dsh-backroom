@@ -1,0 +1,21 @@
+time: 2026-10-04T14:23:41.478Z
+source: host
+phase: running
+app: @deepseek-ai/dsh-desktop 0.2.0-rc.2
+platform: win32 x64
+electron: 44.0.0
+node: 24.18.1
+locale: zh-CN
+shell pid: 9220
+
+--- error ---
+Error: dsh desktop host exited with 4294967295: (node:3712) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
+(Use `DeepSeek Harness --trace-deprecation ...` to show where the warning was created)
+    at ChildProcess.<anonymous> (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/lib/main.js:3724:64)
+    at Object.onceWrapper (node:events:631:26)
+    at ChildProcess.emit (node:events:509:28)
+    at maybeClose (node:internal/child_process:1124:16)
+    at ChildProcess._handle.onexit (node:internal/child_process:306:5)
+
+--- renderer console (error level, oldest first) ---
+(no error-level renderer console output was captured)

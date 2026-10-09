@@ -1,0 +1,17 @@
+time: 2026-10-04T13:04:01.280Z
+source: renderer
+phase: running
+app: @deepseek-ai/dsh-desktop 0.2.0-rc.2
+platform: win32 x64
+electron: 44.0.0
+node: 24.18.1
+locale: zh-CN
+shell pid: 21424
+
+--- error ---
+Error: Desktop renderer exited: crashed
+    at WebContents.<anonymous> (file:///C:/Users/sampleuser/AppData/Local/Programs/DeepSeek%20Harness/resources/app.asar/lib/main.js:12067:107)
+    at WebContents.emit (node:events:521:24)
+
+--- renderer console (error level, oldest first) ---
+(no error-level renderer console output was captured)

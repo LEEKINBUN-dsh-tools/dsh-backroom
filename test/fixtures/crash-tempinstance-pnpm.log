@@ -1,0 +1,15 @@
+error: option '--profile <name>' argument 'web' is invalid. select a profile only once
+dsh web: http://127.0.0.1:19401/?token=[redacted]
+dsh: fatal load failure: TypeError [ERR_INVALID_ARG_TYPE]: The "url" argument must be of type string. Received undefined
+    at LoadCache.get (node:internal/modules/esm/module_map:95:5)
+    at Proxy.getLinked (file:///D:/TEMP/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/dsh-hmr/lib/index.js:462:40)
+    at Object.apply (file:///D:/Temp/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:120:36)
+    at buildProbe (file:///D:/TEMP/backroom-temp-20261004/home/profiles/web/node_modules/.pnpm/dsh-backroom@file+E++dsh-pl_f69888e890d8a7f1f57b31457faf1a28/node_modules/dsh-backroom/lib/index.js:378:29)
+    at Object.probeHandler [as handler] (file:///D:/TEMP/backroom-temp-20261004/home/profiles/web/node_modules/.pnpm/dsh-backroom@file+E++dsh-pl_f69888e890d8a7f1f57b31457faf1a28/node_modules/dsh-backroom/lib/index.js:451:23)
+    at handle (file:///D:/TEMP/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:235:17)
+    at next (file:///D:/TEMP/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:248:5)
+    at compression (D:\TEMP\chamber-tw131\asar\dsh\node_modules\compression\index.js:265:5)
+    at WebServer.gzip (file:///D:/TEMP/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:129:3)
+    at Server.<anonymous> (file:///D:/TEMP/chamber-tw131/asar/dsh/node_modules/@deepseek-ai/dsh-host-webserver/lib/index.js:259:14) {
+  code: 'ERR_INVALID_ARG_TYPE'
+}
