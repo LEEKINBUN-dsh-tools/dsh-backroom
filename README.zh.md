@@ -48,6 +48,24 @@ powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 
 - 不常驻的理由：常驻要把 key 写进用户环境变量，那份明文对本机任意进程、漫游备份都可见。不常驻买到的是**默认关闭**＋**key 不落盘**，不是绝对安全（能读你环境变量的进程本来也读得到你的 cookie）——所以它是"更小的暴露面"。
 - `-Sid` 建议填一枚**专门当靶子的空会话**，用完从名单里摘掉就是关门。
 
+### 会话里的模型怎么用（Agent 工具面）
+
+三枚只读端点虽然免 cookie，但**会话里的模型不知道这个端口存在**——没有工具面就"只有被提示过的那一发能用"。所以本插件把它们注册成官方 `defineTool` 工具（`ctx.get('tools', false)` 松散取，取不到就如实报 `absent`，绝不因工具面缺席而整包不挂）：
+
+| 工具名 | 干什么 | 要不要开关 |
+|---|---|---|
+| `backroom_probe` | 宿主形状：可达矩阵、本插件各项计数（含会话入口的拒绝账） | 不要，只读 |
+| `backroom_logs` | 宿主日志尾（`limit/level/contains`） | 不要，只读 |
+| `backroom_faults` | 崩溃件归因（`limit/dir`） | 不要，只读 |
+| `backroom_workspace` | `list` 列工作区／`create` 建一枚（官面 `workspaceController.create`，已存在回 `created:false`） | **要**：`DSH_BACKROOM_WORKSPACE_ROOTS`（逗号/分号前缀名单）；没设＝`disabled` |
+| `backroom_wsl_workspace` | `distros/ls/check` 走 `dsh-wsl-workspace` 自己的 loopback 桥；`create` 按它客户端那条顺序拼（官面 create ＋ 它的 `registerWindows`／`setUser`） | `create` 要：`DSH_BACKROOM_WSL_DISTROS`；只读三档不要 |
+| — | **`session` 那枚不做成工具** | 安全优先：不给任意会话一个"替你花钱"的按钮 |
+
+两格实现取向值得说明：① **WSL 那档不复制别人的私有状态**——`~/.dsh/wsl-workspaces.json` 归 `dsh-wsl-workspace` 写，我只按它自己客户端的调用顺序委托；官面 create 失败时**不会**去动登记（不留半截），登记失败时回包点明"工作区建好了但 bash 可能不进 WSL，按 `register.error` 修"。② 路径映射（`/mnt/e/tmp`→`E:\tmp`，其余→`\\wsl.localhost\<distro>\…`）与两把白名单判定都是**文件头导出的纯函数**，夹具直接验，包括"`E:/ab` 不算 `E:/a` 之内"这一格。
+
+**工具面已证的两档**（10-09 真桌面端）：`GET /dsh-backroom/probe` 回 `toolsState.status="registered(5)"`、`lastError:""`；独立介质——会话日志最新一发 `request/header.tools` 里五枚全在，而重启前那两发 0 命中。也就是**"注册上了"与"模型看得见"分别量过**，没拿前者冒充后者。
+
+
 
 ```bash
 # 启动 dsh 之前设（不设＝这枚端点等于不存在）

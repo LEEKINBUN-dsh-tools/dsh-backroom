@@ -42,7 +42,7 @@ function makeLoggerFace() {
 	return { face, exporters }
 }
 
-function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController } = {}) {
+function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true } = {}) {
 	const table = new Map()
 	// 真宿主同形：`ctx.get('logger')` 取不到（10-04 现读 absent），只有 `ctx.logger` 属性拿得到
 	// ⇒ logger 一律**不进名字表**，改成属性 getter，让"属性回退"那半条路真被测到。
@@ -50,6 +50,7 @@ function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionContr
 		table.set('hmr', { watchConfig() {}, getLinked() { return { linked: ['dsh-backroom'] } } })
 	}
 	table.set('profileContext', { dir: 'X', patchPath: 'Y' })
+	if (tools !== false) table.set('tools', { __captured: [], register(tool) { this.__captured.push(tool); return () => {} } })
 	if (sessionController !== false) table.set('sessionController', sessionController || { prompt() {}, follow() {}, list() {} })
 	table.set('pluginInventory', { list: () => [{ id: 'backroom', enabled: true, fiberPhase: 'active' }] })
 
@@ -500,6 +501,54 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	}
 }
 
+// ── 15. Agent 工具面（本地只能验降级档：本工作区解析不到 @deepseek-ai/dsh-tools，实测 ERR_MODULE_NOT_FOUND）
+{
+	const settle = async () => { await new Promise((r) => setImmediate(r)); await new Promise((r) => setTimeout(r, 150)) }
+	const disposeAll = async (bag) => {
+		for (const d of bag.effects) {
+			if (typeof d === 'function') await d()
+			else if (d && typeof d.dispose === 'function') await d.dispose()
+		}
+	}
+	const noTools = makeCtx({ tools: false })
+	mod.apply(noTools.ctx)
+	await settle()
+	const st1 = globalThis.__backroomObservations.toolsState
+	assert.match(String(st1.status), /^absent/, `没有 tools 服务时应报 absent，实际=${st1.status}`)
+	assert.equal(noTools.routes.length, 4, '工具面缺席不许带走那四枚路由')
+	assert.equal(st1.registered.length, 0)
+
+	const withTools = makeCtx({})
+	mod.apply(withTools.ctx)
+	await settle()
+	const st2 = globalThis.__backroomObservations.toolsState
+	assert.ok(/^import-failed/.test(String(st2.status)) || /^registered\(/.test(String(st2.status)),
+		`工具面状态只能是 import-failed 或 registered(n)，实际=${st2.status}`)
+	assert.equal(withTools.routes.length, 4, '工具注册失败也不许带走那四枚路由（整包不能被工具面带走）')
+	const captured = withTools.ctx.get('tools').__captured
+	if (/^import-failed/.test(String(st2.status))) assert.equal(captured.length, 0, 'import 失败时不该有任何一枚被注册')
+	await disposeAll(noTools); await disposeAll(withTools)
+	step(`Agent 工具面·本地档：无 tools⇒absent、dsh-tools 解析不到⇒如实 import-failed，两种情况四枚路由都照挂（现读=${String(st2.status).slice(0, 30)}；真注册要在装了 dsh-tools 的 profile 里读）`)
+}
+
+// ── 16. 工具面里的路径映射与两把白名单闸（纯函数直验，不等真宿主）───────────
+{
+	assert.equal(mod.mntToWindowsPath('/mnt/e/tmp'), 'E:\\tmp')
+	assert.equal(mod.mntToWindowsPath('/mnt/c/Users/x'), 'C:\\Users\\x')
+	assert.equal(mod.mntToWindowsPath('/home/ruler/proj'), null, '不是 /mnt 形就该回 null（那支走 UNC）')
+	assert.deepEqual(mod.wslTargets('Ubuntu', '/home/ruler/proj'), { target: '\\\\wsl.localhost\\Ubuntu\\home\\ruler\\proj', branch: 'unc' })
+	assert.deepEqual(mod.wslTargets('Ubuntu', '/mnt/e/tmp'), { target: 'E:\\tmp', branch: 'mnt-drive' })
+	assert.equal(mod.rootGate('', 'E:/x'), 'disabled', '没设名单＝不建，绝不顺手放行')
+	assert.equal(mod.rootGate('E:/dsh-plugins;D:/somewhere', 'E:/dsh-plugins/x'), 'ok')
+	assert.equal(mod.rootGate('E:/dsh-plugins', 'E:/dsh-plugins'), 'ok', '根本身也算在内')
+	assert.equal(mod.rootGate('E:/dsh-plugins', 'C:/Users/whoever/x'), 'outside-roots')
+	assert.equal(mod.rootGate('E:/a', 'E:/ab/x'), 'outside-roots', '前缀要按路径段判，E:/ab 不许被 E:/a 放过')
+	assert.equal(mod.distroGate('', 'Ubuntu'), 'disabled')
+	assert.equal(mod.distroGate('Ubuntu, Debian', 'Ubuntu'), 'ok', '逗号两侧的空格要能吃掉')
+	assert.equal(mod.distroGate('Ubuntu', 'calc'), 'not-allowed-distro')
+	step('路径映射＋两把白名单闸：/mnt 两支、UNC 拼装、"没设＝disabled"、前缀按路径段判（E:/ab 不算 E:/a 之内）')
+}
+
 // ── 13. 红线哨兵（把本窗裁定与这次事故都钉成会抛错的闸）───────────────────
 // 先剥注释再扫：本仓 #91 那一条今天咬到了我自己——禁的是**代码里的那一发调用**，
 // 而"绝不做 X"这句说明本身写在注释里，不剥就会把说明当违规（假红）。
@@ -521,13 +570,19 @@ for (const forbidden of ['getLinked(', 'watchConfig(', 'runExclusive(', 'runRelo
 }
 assert.ok(/'not-called/.test(codeOnly), 'hmr 那一格要写成 not-called 的说明串（把这次事故留在码里，不只是文档里）')
 // 会话窄口的五把闸也要交给闸，不靠"下次记得"：任一 env 名字从代码里消失＝那把闸被拆了，红。
-for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS']) {
+for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS']) {
 	assert.ok(codeOnly.includes(gate), `会话窄口的闸少了一枚：${gate} 不再出现在代码里`)
 }
 assert.equal((codeOnly.match(/\.prompt\(/g) || []).length, 1, '官面 prompt 只许有一个调用点（就在窄口 handler 里），探针那枚端点永远不许动它')
 assert.ok(/crypto\.randomUUID\(\)/.test(codeOnly), 'requestId 必须自带（官面靠它做幂等去重，少了就会重复入队）')
 assert.ok(/timingSafeEqual/.test(codeOnly), 'key 比较必须等时，不许用 ===')
-assert.ok(!/session\/create|\.create\s*\(\s*\{/.test(codeOnly), '这枚窄口**绝不新建会话**：出现 create 即红')
+assert.ok(!/session\/create/.test(codeOnly), '绝不调官面 session/create（新建会话由人做，不给插件）')
+// 会话那枚面上只许出现这两次方法调用；其余一律红（10-09 加工作区 create 后，旧判据"看见 .create( 就红"会误伤官面工作区创建，
+// 所以换成"按哪枚面、调了什么"判：sessionController 面只许 prompt/projections，create 只许出现在工作区那枚面上一次）
+const sessionFaceCalls = (codeOnly.match(/\bsc\.[a-zA-Z]+\(/g) || [])
+assert.deepEqual([...new Set(sessionFaceCalls)].sort(), ['sc.projections(', 'sc.prompt('], `对会话面调了多余的方法：${JSON.stringify([...new Set(sessionFaceCalls)])}`)
+assert.equal((codeOnly.match(/\.create\(/g) || []).length, 1, 'create 只许一处（官面工作区那枚 wc.create）')
+assert.ok(/wc\.create\(/.test(codeOnly), '那一处 create 必须是工作区面的 wc.create(')
 // PITFALLS #99 的第三次踩到（10-05 写实验靶插件时又写成块体＋当场 dispose）⇒ 交给闸，不靠小心。
 // 只许两种形状：`ctx.effect(() => disposer, …)` 或官面那种 `ctx.effect(() => () => {…}, …)`；块体一律红。
 const effectShapeGate = /ctx\.effect\(\(\)\s*=>\s*\{/
@@ -538,6 +593,6 @@ assert.ok(mutated !== codeOnly, '对照件没替换成功＝这发对照是空�
 assert.ok(effectShapeGate.test(mutated), '退回 #99 旧形时块体闸必须红')
 // 官面那一形（块体但返回 disposer）不许被误伤
 assert.ok(!effectShapeGate.test("ctx.effect(() => () => { disposed = true }, 'x')"), '官面形状被误伤＝闸太粗')
-step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**外来面的方法一枚都不调**、ctx.effect 不写块体、**窄口五把闸的 env 名字一枚都不能少＋prompt 只有一个调用点＋绝不 create**')
+step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**外来面只许那三枚白名单方法（会话面只有 prompt/projections、工作区面只有 create 一处）**、ctx.effect 不写块体、**窄口与两把新白名单的 env 名字一枚都不能少**')
 
 console.log(`\nPASS dsh-backroom probe suite — ${passed} steps, 0 failures（夹具档，非真宿主读数）`)

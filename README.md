@@ -48,6 +48,24 @@ powershell -File tools\start-desktop-with-mouth.ps1 -Sid <your session id>
 
 Why not keep the key in your user environment variables: that copy is plaintext, readable by any local process and by roaming/profile backups. Not persisting it buys *default-closed* plus *no stored secret* — it is a smaller exposure surface, not absolute security (a process that can read your env can already read your cookies).
 
+### How a model inside dsh uses it (the agent tool surface)
+
+The read-only routes need no cookie, but **a model in a session does not know that port exists** — without a tool surface only a prompt that was told about it can use it. So the read-only capabilities are additionally registered as official `defineTool` tools (taken via `ctx.get('tools', false)`; if that service is absent the plugin reports `absent` and still mounts instead of hard-depending on it):
+
+| Tool | What it does | Gate |
+|---|---|---|
+| `backroom_probe` | host shape: reachability matrix plus this plugin's own counters, including the session mouth's refusal ledger | none, read-only |
+| `backroom_logs` | host log tail (`limit/level/contains`) | none, read-only |
+| `backroom_faults` | crash-log attribution (`limit/dir`) | none, read-only |
+| `backroom_workspace` | `list` the profile's workspaces, or `create` one through the official `workspaceController.create` (an existing path comes back `created:false`) | **yes**: `DSH_BACKROOM_WORKSPACE_ROOTS` (prefix list); unset ⇒ `disabled` |
+| `backroom_wsl_workspace` | `distros`/`ls`/`check` via `dsh-wsl-workspace`'s own loopback bridge; `create` composes in the order that plugin's client uses (official create, then its `registerWindows`/`setUser`) | `create`: `DSH_BACKROOM_WSL_DISTROS`; the three reads need nothing |
+| — | **the `session` route is deliberately not a tool** | safety first: no session gets a button that spends your quota |
+
+Two design notes: ① the WSL path **does not copy another plugin's private state** — `~/.dsh/wsl-workspaces.json` belongs to `dsh-wsl-workspace`, and we only delegate in its own call order; if the official create fails, registration is never attempted (no half-done workspace), and if registration fails the reply says so rather than reporting success. ② Path mapping (`/mnt/e/tmp` → `E:\tmp`, otherwise `\\wsl.localhost\<distro>\…`) and both allow-list checks are **exported pure functions** unit-tested directly, including "`E:/ab` is not inside `E:/a`".
+
+**Proven about the tool surface** (packaged desktop, 10-09): `GET /dsh-backroom/probe` reports `toolsState.status="registered(5)"`, `lastError:""`, and independently the newest `request/header.tools` frame in the durable session log lists all five while the two frames from before the restart list none — "registered" and "handed to the model" were measured separately, and the first is never used to claim the second.
+
+
 ### The five gates on the session mouth
 
 

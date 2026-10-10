@@ -1,7 +1,7 @@
 {
   "name": "dsh-backroom",
   "description": "DeepSeek Harness (dsh) plugin: a read-only back room for plugin authors — the host's own log buffer made readable, plus a live reachability probe of the official service faces.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "author": "Ruler4396",
   "type": "module",
