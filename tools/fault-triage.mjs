@@ -17,6 +17,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import { pathToFileURL } from 'node:url'
 
 const PROTECTED = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']
 const MAX_FILE_BYTES = 256_000
@@ -152,8 +153,11 @@ export function scanLogs({ logs = [], sourceRoots = [], limit = 50, maxFiles = 2
 		if (!attr.culprit) {
 			row.noCulpritReason =
 				parsed.source === 'renderer' ? 'renderer-crash（那份里没有插件帧）'
+				: parsed.exitCode === '4294967295' && !parsed.fatalLine && parsed.frames.length <= 6
+					? 'kill-shaped（exit=-1、无 `dsh: fatal` 行、子进程零输出 ⇒ **与 Stop-Process 强杀留下的件同形**，不可归因）'
 				: parsed.frames.length === 0 ? 'no-stack（只有退出码，没有栈）'
 				: 'no-installed-bundle-frame（栈全在官面/internal/第三方）'
+			row.killShaped = String(row.noCulpritReason).startsWith('kill-shaped')
 		}
 		out.push(row)
 	}
@@ -280,3 +284,9 @@ export async function main(argv = []) {
 }
 
 function c_pad(c) { return `${c.bundle} ${c.frame}@${path.basename(c.file)}:${c.line}` }
+
+// 直接命令行也要能用（`npm run fault-triage -- scan …` 此前是把这枚文件当脚本跑，而它只 export、什么都不执行）。
+// 守卫按"是不是被当成入口"判：lib/index.js 与顶层转发壳 import 这枚文件时，一个字都不多做。
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+	process.exitCode = await main(process.argv.slice(2))
+}

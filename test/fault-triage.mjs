@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { parseHostLog, attribute, classifyFrame, scanLogs, planMask, applyMask, restoreMask } from '../tools/fault-triage.mjs'
 
@@ -67,7 +68,10 @@ const byName = Object.fromEntries(rows.map((r) => [path.basename(r.file), r]))
 assert.equal(byName['crash-renderer.log'].culprit, null)
 assert.match(byName['crash-renderer.log'].noCulpritReason, /renderer-crash/)
 assert.equal(byName['crash-renderer.log'].rendererState, 'crashed')
-assert.equal(byName['crash-no-culprit.log'].noCulpritReason, 'no-installed-bundle-frame（栈全在官面/internal/第三方）')
+assert.equal(byName['crash-no-culprit.log'].noCulpritReason, 'kill-shaped（exit=-1、无 `dsh: fatal` 行、子进程零输出 ⇒ **与 Stop-Process 强杀留下的件同形**，不可归因）')
+assert.equal(byName['crash-no-culprit.log'].killShaped, true, 'exit=-1 且无成因行 ⇒ 必须标成"与强杀同形"，别让人以为抓到了崩溃')
+assert.ok(!byName['crash-desktop-backroom.log'].killShaped, '有 fatal 行的那一枚不许被标成强杀形状')
+assert.equal(byName['crash-desktop-backroom.log'].noCulpritReason, undefined, '能归因的那份不该带"不可归因原因"格')
 assert.equal(byName['crash-tempinstance-pnpm.log'].timeFrom, 'mtime', 'CLI stdout 那份没有 time: 头，排序要退回 mtime 并标来源')
 assert.equal(byName['crash-desktop-backroom.log'].timeFrom, 'header')
 ok(`scan：目录输入 ${rows.length} 份，按时间倒序，逐份带 frames；不可归因的三份各回各原因`)
@@ -118,6 +122,24 @@ try {
 } finally {
 	fs.rmSync(tmp, { recursive: true, force: true })
 	assert.equal(fs.existsSync(tmp), false, '临时根必须清干净')
+}
+
+// ── 09. 命令行入口（#106 那一族的另一面：`npm run fault-triage` 指的正是这枚文件，
+//      而它此前只 export、当脚本跑时**一个字都不打**还退 0 ⇒ 绿灯的假装置）───────────
+{
+	const tool = path.join(here, '..', 'tools', 'fault-triage.mjs')
+	const run = (args) => spawnSync(process.execPath, [tool, ...args], { encoding: 'utf8', timeout: 30_000 })
+	const none = run([])
+	assert.equal(none.status, 2, `不带子命令要退 2（实退 ${none.status}）`)
+	assert.ok(/用法/.test(none.stdout), `用法那一行必须在，实际头 80 字=${String(none.stdout).slice(0, 80)}`)
+	const bad = run(['scan'])
+	assert.equal(bad.status, 2, `scan 缺 --logs 要退 2（实退 ${bad.status}）`)
+	assert.ok(/--logs/.test(bad.stdout), '缺参数时要给可抄的参数名')
+	const scanned = run(['scan', '--logs', path.join(here, 'fixtures'), '--source-root', path.join(here, '..')])
+	assert.equal(scanned.status, 0, `真扫一批夹具必须退 0（实退 ${scanned.status}）`)
+	assert.ok(/dsh-backroom/.test(scanned.stdout), '夹具里那枚嫌疑包必须出现在表上')
+	assert.ok(!/undefined/.test(scanned.stdout), '表上不许漏出 undefined（那一格是"没有值"的形状）')
+	ok('命令行入口：不带子命令退 2 并打用法；真扫夹具退 0 且表上有嫌疑包（守卫让 import 时一个字都不多做）')
 }
 
 console.log(`\nPASS fault-triage 套件 — ${n} 步，0 失败（真实崩溃件＋tmp 写分支；不含对 ~/.dsh 的任何写入）`)
