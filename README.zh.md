@@ -32,7 +32,7 @@
 2. 设了 key，但你要发消息的那枚会话**不在 `DSH_BACKROOM_SESSION_ALLOW` 名单里** ⇒ `403 not-allowlisted`（它绝不会"帮你挑最近一枚会话"，也绝不新建会话）；
 3. 两道都过了，还有限速（每分钟 6 发）、限长（4000 字／16 KB）、限时（等待最多 120 秒）。
 
-"窄"体现在：**只能对指定会话发文本，只能读它跑完没有**——不能建会话、不能切模型、不能取消、不能改队列、不碰 token。要更宽的能力得改代码，改代码就会被那套哨兵挡住（第 15 步会把"env 名字少一枚""多一个调用点""出现 create"直接判红）。
+"窄"体现在：**只能对指定会话发文本，只能读它跑完没有**——不能建会话、不能切模型、不能取消、不能改队列、不碰 token。要更宽的能力得改代码，改代码就会被那套哨兵挡住（第 17 步会把"env 名字少一枚""多一个调用点""出现 create"直接判红）。
 
 **日常怎么用（安全优先，也省事）**
 
@@ -160,7 +160,7 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>    
 
 - **夹具绿 ≠ 真宿主读数。** `test/probe-shape.mjs` 跑在假 ctx / 真 `console` 对象上，证的是注册、过滤、环形上限、还原与红线哨兵；它**不**证明任何关于正在跑的宿主的事实——那些只能来自 `GET /dsh-backroom/probe`，而且那一档是**端点回包**，永远不等于屏上帧。
 - 日志尾从本插件 `apply()` 那一刻起算。更早的启动期日志能不能看到，取决于探针报的那一发"注册时缓冲里已有几条"（10-04 真宿主＝1 条，而那条正是早于我们 apply 的 `dsh-chamber` 行 ⇒ 缓冲确实能带回放），本插件不去伪造它没看见的东西。
-- **探针「只问名字，不动手」**（10-04 事故换来的第一条，正文 `PITFALLS.md #103`、约束 `docs/PLUGIN-RULES.md` §E5）：对外来的官面服务面，本插件只取 `typeof` 与方法名清单，**不调用它们的任何方法**。起因是我自己从探针里调了 `hmr.getLinked()`——那枚方法只在 ESM loader 钩子的现场成立，从 HTTP 处理器里调它会拿 `undefined` 当 url 走 `LoadCache.get`，**抛发生在 loader 的 tick 上、本端 try/catch 拦不到**，后端直接 `dsh: fatal load failure` 退出。探针里那一格现在写成 `not-called（…）` 的说明串，并由套件第 15 步用"出现 `getLinked(` 就红"的哨兵钉住。
+- **探针「只问名字，不动手」**（10-04 事故换来的第一条，正文 `PITFALLS.md #103`、约束 `docs/PLUGIN-RULES.md` §E5）：对外来的官面服务面，本插件只取 `typeof` 与方法名清单，**不调用它们的任何方法**。起因是我自己从探针里调了 `hmr.getLinked()`——那枚方法只在 ESM loader 钩子的现场成立，从 HTTP 处理器里调它会拿 `undefined` 当 url 走 `LoadCache.get`，**抛发生在 loader 的 tick 上、本端 try/catch 拦不到**，后端直接 `dsh: fatal load failure` 退出。探针里那一格现在写成 `not-called（…）` 的说明串，并由套件第 17 步用"出现 `getLinked(` 就红"的哨兵钉住。
 - **捕获面有三把界，这是同一次事故的第二条**（约束 §E5b）：① 只接管 `console.error`／`console.warn`——热路径 `log/info/debug` 不接（实测那一帧 28 行里 26 行走 `console.info`，`deepseek-account` 每发请求两发响应各一条）；② 速率闸 **200 条/秒**，超额丢弃并计数，`/logs` 回包里的 `rate` 格把 `reentrantSkips`／`rateDropped`／`captureErrors` 原样带出来；③ 逐参数封顶 **512 字符**、单条 **600 字符**，先各自 slice 再拼，不对整条渲染结果做全局正则。另有**重入闸**：渲染过程中再进来的那一发直接跳过（`util.inspect` 会调用对象自己的 `[util.inspect.custom]`，那里再打一条日志就是自递归）。注意：这三把界是卫生，**不是那次退出的成因**——成因是上面那条越界调用。
 - 所以这一档**是有意的近似**：洪峰期间的日志会被丢弃并计入 `rateDropped`。要完整取证就缩小窗口（`limit`／`contains`／`level`），别拿它当审计账本。
 - 环形尾由导出的 `createRing(limit)` 实现，默认 4000；淘汰算术在套件里用 `limit=5` 小规模直证——既不靠睡 21 秒填满，也不把默认值调大来凑测试。
