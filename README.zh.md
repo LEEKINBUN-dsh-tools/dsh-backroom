@@ -6,7 +6,7 @@
 
 ## 为什么需要它
 
-装机桌面端（0.2.0-rc.2）上缺的两样东西，都不是"官方没开放接口"：
+装机桌面端（0.2.0-rc.2 起；现版 **0.2.1-rc.2**）上缺的两样东西，都不是"官方没开放接口"：
 
 - **宿主日志没人读。** `ctx.logger` 自带的唯一出口是 cordis 那本 1000 条内存环形缓冲（`logger.buffer`），而发行物里只有"启动致命失败"那一条路注册过第二枚 sink。宿主代码走 logger 不走 console（光 `dsh-hmr` 就打 19 发 logger），装机版后端子进程的 stdout 又被 pipe 进 GUI 进程丢掉 ⇒ 于是"插件装了但没动静"这种现场**一条凭据都没有**。
 - **可达性当年只量过一次、且记错了。** `ctx.get('sessionController')` 在插件纤维里到底能不能取到，是由**正在跑的进程**决定的，不是 `.d.ts` 决定的。本插件用一枚活体矩阵回答它，而不是拿猜测当结论。
@@ -19,7 +19,7 @@
 |---|---|
 | `GET /dsh-backroom/probe` | 逐枚服务面矩阵：每个名字把 `ctx.get(name, true)` 与 `ctx.get(name, false)` **分开**报成 `present(<类型>)` / `absent` / `threw: <原文>`，并列出该面自己的方法名；声明过与未声明依赖的属性访问结果各记一发；`hmr.getLinked()` 原样带出；**本插件 apply 之前缓冲里已有几条**（这一发就是"能不能回放"的判决）；node 版本、argv、`DSH_*` 变量**名**（不给值）、`ctx.fiber.state`。 |
 | `GET /dsh-backroom/logs?limit=&level=&contains=` | 日志尾：自 apply 起 `ctx.logger` 打的**全部**，外加插件们的 `console.error/warn`。`level` 收 `error|info|warn|debug` 也收官面数值档 0..3。环形上限 4000 条，并如实报丢了几条。 |
-| `GET /dsh-backroom/faults?limit=&dir=` | **崩溃归因**：读桌面端那两类崩溃件（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`／`-renderer.log`），逐份回"哪一枚**装侧包**的哪一帧（嫌疑）＋官面哪一帧抛的（它误触的那枚方法）＋成因行 `dsh: fatal …: TypeError [ERR_INVALID_ARG_TYPE] …` 与包裹行分开"；归不出嫌疑包的那份**各回各原因**（`renderer-crash`／`no-stack`／`no-installed-bundle-frame`），不硬捏。默认根＝桌面端那一棵；CLI 临时实例用 `DSH_BACKROOM_CRASH_LOGS=<目录>` 指开。`dir` 只准落在白名单根内（这枚端点免鉴权，不能当本机任意文件的读 oracle），越界回 **403**。 |
+| `GET /dsh-backroom/faults?limit=&dir=` | **崩溃归因**：读桌面端那两类崩溃件（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`／`-renderer.log`），逐份回"哪一枚**装侧包**的哪一帧（嫌疑）＋官面哪一帧抛的（它误触的那枚方法）＋成因行 `dsh: fatal …: TypeError [ERR_INVALID_ARG_TYPE] …` 与包裹行分开"；归不出嫌疑包的那份**各回各原因**（`renderer-crash`／`no-stack`／`kill-shaped`／`no-installed-bundle-frame`），不硬捏。**`kill-shaped` 这一档是 10-19 新加的**：`exit=-1`＋没有 `dsh: fatal` 行＋栈 ≤6 帧＝"后端子进程被从外面带走"那一形，与 `Stop-Process` 强杀留下的件**同形** ⇒ 归因装置**拒绝**把它算成任何插件的缺陷（`row.killShaped=true`）。10-19 那批"写面一开就挂"的说法就是被这一档否掉的：4 枚 host 件全 716 B 同字节，其中两枚的時刻与统筹自己的两次重启对得上。默认根＝桌面端那一棵；CLI 临时实例用 `DSH_BACKROOM_CRASH_LOGS=<目录>` 指开。`dir` 只准落在白名单根内（这枚端点免鉴权，不能当本机任意文件的读 oracle），越界回 **403**。 |
 | `GET`/`POST /dsh-backroom/session?session=&key=` | **会话窄口（默认全关）**：GET 读一枚登记会话的回合面——读的是官面投影袋里**确实在册**的两枚（`turnOutline` 回合数组、`sessionStats.turns`），回包给 `turnCount/lastTurn/lastResponseChars/asOfSeq/readable`；POST 往那枚**已登记的**会话发一条 prompt，`&wait=turn-end&timeoutMs=…` 等到"多出一回合且那一回合的 `response` 被 `turn/end` 填上"，回 `ended/endedClaim/turnStarted/assistantResponded/waitedMs`。只走官面 handler（`sessionController.prompt/projections`，**两枚参数 `request, signal`**）。10-09 桌面端端到端：一发 prompt 前后 `turnCount 1→2`、`asOfSeq 19→30`，日志里对应两条 `turn/end reason:"completed"`、回复两条。读不到判据时端点自报 `endedClaim:"unreadable"`，不把手上没证据写成"没结束"。⚠ 旧写法"读 `turnBoundary.lastTurn`"是猜的、实测**不在公共袋里**，已改判（正文＝`docs/PLUGIN-RULES.md` §H.5） |
 
 ### 先说清"窄口"是什么（这是一句行话，换成白话）
@@ -42,8 +42,13 @@
 ```powershell
 powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 -Sid <你的会话id>
 # → use this key for this run: 546bb02911b9…（每次都不一样）
+# → backend port = 2495（**每次启动都可能不同**，见下面那格）
 # → 然后按它打印的那行 curl 直接用
 ```
+
+**后端端口这一格（10-19 改判，重要）**：桌面端 **0.2.0-rc.2 写死 `19387`；0.2.1-rc.2 起改成 `--port 0`（系统分配）⇒ 每次启动随机**（本机实测三枚：`12469`／`12750`／`2495`）。所以**别再用"19387 有没有监听"判死活**——那一格在新版上**永远回"没监听"**，看着像"插件把宿主弄挂了"，其实是尺瞎了（本窗就差点这么误判一次，凭据＝`docs/compat/VERSIONS/0.2.1-rc.2/` P22）。现行认法两条：
+- **有本插件**：`GET /dsh-backroom/probe` 免 cookie 回 **200** 的那一枚就是后端（启动器用的正是这条）。
+- **没有本插件**：在 `DeepSeek Harness.exe` 那一族 PID 的监听口里，找根路径回 **401 ＋ `dsh web authentication required; reopen the URL printed by dsh web.`** 的那一枚。⚠ 新版同族还另有 **`9230`＝官面 inspector 的 CDP 口**（`/json/version` 自报 `Browser:"dsh-experimental-inspector/0"`），它回 **404**，别认成后端、更别认成"宿主死了"。
 
 - 不常驻的理由：常驻要把 key 写进用户环境变量，那份明文对本机任意进程、漫游备份都可见。不常驻买到的是**默认关闭**＋**key 不落盘**，不是绝对安全（能读你环境变量的进程本来也读得到你的 cookie）——所以它是"更小的暴露面"。
 - `-Sid` 建议填一枚**专门当靶子的空会话**，用完从名单里摘掉就是关门。
@@ -58,7 +63,7 @@ powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 
 | `backroom_logs` | 宿主日志尾（`limit/level/contains`） | 不要，只读 |
 | `backroom_faults` | 崩溃件归因（`limit/dir`） | 不要，只读 |
 | `backroom_workspace` | `list` 列工作区／`create` 建一枚（官面 `workspaceController.create`，已存在回 `created:false`） | **要**：`DSH_BACKROOM_WORKSPACE_ROOTS`（逗号/分号前缀名单）；没设＝`disabled` |
-| `backroom_wsl_workspace` | `distros/ls/check` 走 `dsh-wsl-workspace` 自己的 loopback 桥；`create` 按它客户端那条顺序拼（官面 create ＋ 它的 `registerWindows`／`setUser`） | `create` 要：`DSH_BACKROOM_WSL_DISTROS`；只读三档不要 |
+| `backroom_wsl_workspace` | `distros/ls/check` 走 `dsh-wsl-workspace` 自己的 loopback 桥；`create` 按它客户端那条顺序拼（官面 create ＋ 它的 `registerWindows`／`setUser`） | `create` 要：`DSH_BACKROOM_WSL_DISTROS`；只读三档不要。**桥打去哪一枚端口**（10-19 改）＝`DSH_BACKROOM_BRIDGE_BASE` 显式给 > 自家路由被访问时 Host 头里那枚**环回** origin > 两样都没有就**一个字都不发**并回 `bridge-base-unknown`（旧写法回落到写死的 19387，新版那口上根本没东西 ⇒ 假"桥坏了"；`GET /dsh-backroom/probe` 的 `bridge` 格就是"为什么没发"的读数处） |
 | — | **`session` 那枚不做成工具** | 安全优先：不给任意会话一个"替你花钱"的按钮 |
 
 两格实现取向值得说明：① **WSL 那档不复制别人的私有状态**——`~/.dsh/wsl-workspaces.json` 归 `dsh-wsl-workspace` 写，我只按它自己客户端的调用顺序委托；官面 create 失败时**不会**去动登记（不留半截），登记失败时回包点明"工作区建好了但 bash 可能不进 WSL，按 `register.error` 修"。② 路径映射（`/mnt/e/tmp`→`E:\tmp`，其余→`\\wsl.localhost\<distro>\…`）与两把白名单判定都是**文件头导出的纯函数**，夹具直接验，包括"`E:/ab` 不算 `E:/a` 之内"这一格。
@@ -71,7 +76,8 @@ powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 
 # 启动 dsh 之前设（不设＝这枚端点等于不存在）
 DSH_BACKROOM_SESSION_KEY=一把本地密钥
 DSH_BACKROOM_SESSION_ALLOW=<sessionId1,sessionId2>
-curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=…&session=<登记的 sid>&wait=turn-end&timeoutMs=60000" \
+# $P＝后端端口，按上面那格认出来（0.2.1-rc.2 起每次启动随机；启动器会把它打印出来）
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/session?key=…&session=<登记的 sid>&wait=turn-end&timeoutMs=60000" \
      -H 'content-type: application/json' -d '{"text":"只回一个字：好"}'
 ```
 
@@ -89,9 +95,10 @@ curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=…&session=<�
 四枚路由都经 `webServer.register()` 挂在**插件自己的前缀**上，所以不需要应用的会话 cookie 就能读（与 `/dsh-chamber/*` 同形），并带 `Cache-Control: no-store`。**前三枚只读**（`probe`／`logs`／`faults` 只读内存与文件，不写盘、不动会话）；**第四枚 `session` 会花你的额度**，所以它默认关、要两枚 env 才放行，形状见下面那把闸表——这是本插件唯一"动手"的地方。
 
 ```bash
-curl -s http://127.0.0.1:19387/dsh-backroom/probe | head -c 4000
-curl -s "http://127.0.0.1:19387/dsh-backroom/logs?limit=50&level=warn"
-curl -s "http://127.0.0.1:19387/dsh-backroom/faults?limit=8"
+# 只读三枚：$P 是按上面那格认出来的后端端口（新版随机，别填 19387）
+curl -s "http://127.0.0.1:$P/dsh-backroom/probe" | head -c 4000
+curl -s "http://127.0.0.1:$P/dsh-backroom/logs?limit=50&level=warn"
+curl -s "http://127.0.0.1:$P/dsh-backroom/faults?limit=8"
 ```
 
 ### 摘掉那枚坏插件（走命令行，不走端点）
@@ -157,5 +164,6 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>    
 - **捕获面有三把界，这是同一次事故的第二条**（约束 §E5b）：① 只接管 `console.error`／`console.warn`——热路径 `log/info/debug` 不接（实测那一帧 28 行里 26 行走 `console.info`，`deepseek-account` 每发请求两发响应各一条）；② 速率闸 **200 条/秒**，超额丢弃并计数，`/logs` 回包里的 `rate` 格把 `reentrantSkips`／`rateDropped`／`captureErrors` 原样带出来；③ 逐参数封顶 **512 字符**、单条 **600 字符**，先各自 slice 再拼，不对整条渲染结果做全局正则。另有**重入闸**：渲染过程中再进来的那一发直接跳过（`util.inspect` 会调用对象自己的 `[util.inspect.custom]`，那里再打一条日志就是自递归）。注意：这三把界是卫生，**不是那次退出的成因**——成因是上面那条越界调用。
 - 所以这一档**是有意的近似**：洪峰期间的日志会被丢弃并计入 `rateDropped`。要完整取证就缩小窗口（`limit`／`contains`／`level`），别拿它当审计账本。
 - 环形尾由导出的 `createRing(limit)` 实现，默认 4000；淘汰算术在套件里用 `limit=5` 小规模直证——既不靠睡 21 秒填满，也不把默认值调大来凑测试。
-- **当前状态（10-09）**：这枚插件**装在用户自己的桌面端 profile 里并跑通了**（0.2.0-rc.2，后端 19387）。四枚端点全部实测应答；会话入口在真机端到端跑过两发 prompt，端点读数与独立介质（会话日志里的 `turn/end {reason:"completed"}`）逐一对上。开发期验证一律在**仓外临时实例**（自有 `DSH_HOME`、自有端口）做；19387 只在被授权的同步／重启里被动过——**改完源码要加载新字节仍需重启一次**，这是"会动手的那枚端点"带来的成本。
+- **当前状态（10-19）**：这枚插件**装在用户自己的桌面端 profile 里并跑通了**，实测过两版：0.2.0-rc.2（后端 19387，10-09）与 **0.2.1-rc.2（后端随机，10-19 现读 `12469`／`12750`／`2495`）**。四枚端点全部实测应答；会话入口在真机端到端跑过 prompt，端点读数与独立介质（会话日志里的 `turn/end {reason:"completed"}`）逐一对上。开发期验证一律在**仓外临时实例**（自有 `DSH_HOME`、自有端口）做；真宿主那枚端口只在被授权的同步／重启里被动过——**改完源码要加载新字节仍需重启一次**，这是"会动手的那枚端点"带来的成本。
+- **新版唯一需要我方改的东西不是插件代码，是"判活死的尺"**（10-19 改判，正文 `PITFALLS.md #107`、账本 `docs/compat/VERSIONS/0.2.1-rc.2/` P22）：本包的启动器、README、以及顶层任何拿 19387 判死活的配方都会在新版上**沉默地回"没监听"**。启动器已改成端口发现式（在那族 PID 的监听口里找自家 `/dsh-backroom/probe` 回 200 的那一枚，10-19 真机跑过：3 秒认出 `2495`）。
 - 端点免 cookie（本机任意进程可读）。里面不含 token、不含路径之外的敏感值，`DSH_*` 只给名字不给值。

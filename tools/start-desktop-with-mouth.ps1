@@ -1,6 +1,14 @@
 # Start the packaged dsh desktop app with the backroom session mouth OPEN for this run only.
 # The key is NOT persisted (no setx): it lives in this process's environment and dies with the app.
 # Pure ASCII (PITFALLS #102). Params: -Sid (required, comma-separated), -Key (optional, else random per run).
+#
+# Port rule (10-19, docs/compat/VERSIONS/0.2.1-rc.2/MANIFEST.json P22): since 0.2.1-rc.2 the desktop
+# backend does NOT listen on a fixed 19387 any more -- dsh-desktop-host passes "--port 0", so the OS
+# assigns a fresh port per boot (measured 12469 and 12750 on one machine). Waiting for 19387 is a
+# silent false negative now, so this script discovers the port instead:
+#   listening ports owned by the "DeepSeek Harness" PID family, and the backend is the one that
+#   answers our cookie-free /dsh-backroom/probe with 200 (fallback: root path answering 401 with the
+#   official "dsh web authentication required" sentence).
 param(
   [Parameter(Mandatory=$true)][string]$Sid,
   [string]$Key = '',
@@ -24,28 +32,74 @@ if ($Key -eq '') {
   [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   $Key = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
 }
-$running = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue)
-if ($running.Count -gt 0 -and -not $NoRestart) {
-  Write-Output ('stopping ' + $running.Count + ' existing process(es) so the new env actually applies')
-  foreach ($p in $running) { try { Stop-Process -Id $p.Id -Force } catch { } }
-  for ($i = 0; $i -lt 20; $i++) {
-    Start-Sleep -Seconds 1
-    if (-not (netstat -ano | Select-String ':19387' | Select-String 'LISTENING')) { Write-Output ('port 19387 released after ' + ($i + 1) + 's'); break }
+
+function Get-BackendPorts {
+  $pids = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+  if ($pids.Count -eq 0) { return @() }
+  $ports = @()
+  try {
+    $ports = @(Get-NetTCPConnection -State Listen -ErrorAction Stop |
+      Where-Object { $pids -contains $_.OwningProcess } | ForEach-Object { $_.LocalPort } | Select-Object -Unique)
+  } catch {
+    # NetTCPIP module unavailable: fall back to netstat. Column 1 is the local address, last column is the PID.
+    $ports = @(netstat -ano -p TCP | Select-String 'LISTENING' | ForEach-Object {
+        $cols = ($_ -replace '\s+', ' ').Trim().Split(' ')
+        if ($pids -contains $cols[-1]) {
+          $tail = $cols[1]; $j = $tail.LastIndexOf(':')
+          if ($j -ge 0) { $tail.Substring($j + 1) }
+        }
+      } | Where-Object { $_ -ne '' } | Select-Object -Unique)
   }
-} elseif ($running.Count -gt 0) {
-  Write-Output 'NOTE: an instance is already running WITHOUT these env vars; the mouth stays closed there. Drop -NoRestart to restart it.'
+  return @($ports)
 }
 
-$env:DSH_BACKROOM_SESSION_KEY = $Key
-$env:DSH_BACKROOM_SESSION_ALLOW = $Sid
-Start-Process -FilePath $exe
-Write-Output ('started. allow=' + $Sid)
-Write-Output ('use this key for this run: ' + $Key)
-Write-Output ('example: curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=' + $Key + '&session=' + $Sid + '&wait=turn-end" -H "content-type: application/json" -d "{\"text\":\"ping\"}"')
-for ($i = 0; $i -lt 90; $i++) {
-  Start-Sleep -Seconds 1
-  $l = netstat -ano | Select-String ':19387' | Select-String 'LISTENING'
-  if ($l) { Write-Output ('19387 LISTENING after ' + ($i + 1) + 's'); exit 0 }
+function Find-BackendPort {
+  foreach ($pt in (Get-BackendPorts)) {
+    try {
+      $r = Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $pt + '/dsh-backroom/probe') -TimeoutSec 3
+      if ($r.StatusCode -eq 200) { return $pt }
+    } catch { }
+    try {
+      Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $pt + '/') -TimeoutSec 3 | Out-Null
+    } catch {
+      if ($_.Exception.Response -and ([int]$_.Exception.Response.StatusCode) -eq 401) { return $pt }
+    }
+  }
+  return $null
 }
-Write-Output 'WARN: 19387 did not come back within 90s'
-exit 1
+
+$running = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue)
+$startNew = $true
+if ($running.Count -gt 0) {
+  if ($NoRestart) {
+    # Honest about what this branch does NOT do: the running instance keeps whatever env it was started with.
+    Write-Output 'NOTE: an instance is already running and -NoRestart was passed, so this script did not touch its env. The key below only works if that instance was started with the same DSH_BACKROOM_SESSION_KEY.'
+    $startNew = $false
+  } else {
+    Write-Output ('stopping ' + $running.Count + ' existing process(es) so the new env actually applies')
+    foreach ($p in $running) { try { Stop-Process -Id $p.Id -Force } catch { } }
+    for ($i = 0; $i -lt 30; $i++) {
+      Start-Sleep -Seconds 1
+      $left = @(Get-Process -Name 'DeepSeek Harness' -ErrorAction SilentlyContinue)
+      if ($left.Count -eq 0) { Write-Output ('all harness processes gone after ' + ($i + 1) + 's'); break }
+    }
+  }
+}
+if ($startNew) {
+  $env:DSH_BACKROOM_SESSION_KEY = $Key
+  $env:DSH_BACKROOM_SESSION_ALLOW = $Sid
+  Start-Process -FilePath $Exe
+  Write-Output ('started. allow=' + $Sid)
+}
+Write-Output ('use this key for this run: ' + $Key)
+
+$found = $null
+for ($i = 0; $i -lt 120; $i++) {
+  Start-Sleep -Seconds 1
+  $found = Find-BackendPort
+  if ($found) { Write-Output ('backend port found after ' + ($i + 1) + 's'); break }
+}
+if (-not $found) { Write-Output 'FAIL: 120s passed and no backend port was recognised (slow start, or the plugin is not in this profile)'; exit 1 }
+Write-Output ('backend port = ' + $found)
+Write-Output ('probe: curl -s "http://127.0.0.1:' + $found + '/dsh-backroom/probe"')
+Write-Output ('mouth: curl -s -X POST "http://127.0.0.1:' + $found + '/dsh-backroom/session?key=' + $Key + '&session=' + $Sid + '&wait=turn-end" -H "content-type: application/json" -d "{\"text\":\"ping\"}"')

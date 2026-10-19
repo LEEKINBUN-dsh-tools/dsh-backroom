@@ -595,4 +595,32 @@ assert.ok(effectShapeGate.test(mutated), '退回 #99 旧形时块体闸必须红
 assert.ok(!effectShapeGate.test("ctx.effect(() => () => { disposed = true }, 'x')"), '官面形状被误伤＝闸太粗')
 step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**外来面只许那三枚白名单方法（会话面只有 prompt/projections、工作区面只有 create 一处）**、ctx.effect 不写块体、**窄口与两把新白名单的 env 名字一枚都不能少**')
 
+// ── 18. WSL 桥基址：0.2.1-rc.2 起端口随机，"猜一个写死的端口"这种默认值必须被闸住 ─────
+{
+	// 观察到什么才算"自己的 origin"：只认环回，且**不许被后缀骗过去**
+	assert.equal(mod.loopbackOrigin('127.0.0.1:2495'), '127.0.0.1:2495')
+	assert.equal(mod.loopbackOrigin('Localhost:3080 '), 'localhost:3080', 'Host 头大小写无关、尾部空格要吃掉')
+	assert.equal(mod.loopbackOrigin('[::1]:9230'), '[::1]:9230')
+	assert.equal(mod.loopbackOrigin('127.0.0.1'), '127.0.0.1', '无端口也算环回')
+	assert.equal(mod.loopbackOrigin('evil.example:80'), '', '非环回＝空（否则 Host 头能把插件支去外部主机＝SSRF）')
+	assert.equal(mod.loopbackOrigin('127.0.0.1.evil.com'), '', '后缀骗不过去')
+	assert.equal(mod.loopbackOrigin('127.0.0.1:2495:9'), '', '畸形端口不认')
+	assert.equal(mod.loopbackOrigin(''), '')
+	// 三档优先级：env > 观察到 > unknown，且 unknown 那档必须自带"怎么走通"的话
+	assert.deepEqual(mod.bridgeBase('http://127.0.0.1:19999', '127.0.0.1:2495'), { base: 'http://127.0.0.1:19999', source: 'env' }, 'env 显式给必须赢')
+	assert.deepEqual(mod.bridgeBase('', '127.0.0.1:2495'), { base: 'http://127.0.0.1:2495', source: 'observed-host-header' })
+	assert.deepEqual(mod.bridgeBase(undefined, undefined), { base: '', source: 'unknown', reason: mod.bridgeBase(undefined, undefined).reason }, '没 env 也没观察到 ⇒ base 空、source 写 unknown')
+	assert.ok(/DSH_BACKROOM_BRIDGE_BASE/.test(mod.bridgeBase('', '').reason), 'unknown 那档必须给可执行的补救（不许只报错不给路）')
+	step('桥基址三档（env／观察／unknown）＋环回判定不被后缀骗（127.0.0.1.evil.com 与 evil.example 都回空）')
+}
+{
+	// 闸的落点在代码本体里：不许留"回落到某个写死端口"的默认值。正对照＝把旧形退回去，必须恰在这一发红。
+	const hardcoded = /19387|process\.env\.DSH_PORT/
+	assert.ok(!hardcoded.test(codeOnly), `代码本体里又出现了写死端口／DSH_PORT 回落：${JSON.stringify((codeOnly.match(/.{0,40}(19387|DSH_PORT).{0,40}/) || [])[0])}`)
+	const mutated = codeOnly.replace('bridgeBase(process.env.DSH_BACKROOM_BRIDGE_BASE, selfOrigin)', "bridgeBase(process.env.DSH_BACKROOM_BRIDGE_BASE || `http://127.0.0.1:19387`, selfOrigin)")
+	assert.ok(mutated !== codeOnly, '对照件没替换成功＝这发对照是空的')
+	assert.ok(hardcoded.test(mutated), '退回"猜 19387"那一形时闸必须红（空闸＝没闸）')
+	step('哨兵：本体里不许再有 19387／DSH_PORT 回落（新版端口随机 ⇒ 静默打旧口＝假"桥坏了"），退回旧形的合成件必红')
+}
+
 console.log(`\nPASS dsh-backroom probe suite — ${passed} steps, 0 failures（夹具档，非真宿主读数）`)

@@ -19,7 +19,7 @@ Current build is the **probe + fault-attribution + narrow session mouth** shape:
 |---|---|
 | `GET /dsh-backroom/probe` | Per-service matrix: for each name, `ctx.get(name, true)` / `ctx.get(name, false)` reported separately as `present(<type>)` / `absent` / `threw: <message>`, plus the face's own method names; property-access results for declared vs undeclared deps; `hmr.getLinked()` as-is; how many log records were already buffered before this plugin applied (that is the replayability reading); node/argv/`DSH_*` env **names**; `ctx.fiber.state`. |
 | `GET /dsh-backroom/logs?limit=&level=&contains=` | The log tail: everything `ctx.logger` produced since apply **plus** plugin `console.error/warn` output. `level` accepts `error|info|warn|debug` or the official numeric levels 0..3. Ring cap 4000 lines, with the dropped count reported. |
-| `GET /dsh-backroom/faults?limit=&dir=` | **Crash attribution**: reads the desktop crash sinks (`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log` / `-renderer.log`) and per file returns the first *installed-bundle* frame (the suspect), the first official frame (the face it mis-called), the `dsh: fatal …` cause line and the wrapper line **as two separate fields**. Files with no installed-bundle frame come back with a reason instead of a guess (`renderer-crash` / `no-stack` / `no-installed-bundle-frame`). Default root is the desktop tree; a CLI instance points it with `DSH_BACKROOM_CRASH_LOGS=<dir>`. `dir` must sit inside an allowed root — this route is cookie-free, so it must not become a local file-read oracle; anything else gets **403**. |
+| `GET /dsh-backroom/faults?limit=&dir=` | **Crash attribution**: reads the desktop crash sinks (`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log` / `-renderer.log`) and per file returns the first *installed-bundle* frame (the suspect), the first official frame (the face it mis-called), the `dsh: fatal …` cause line and the wrapper line **as two separate fields**. Files with no installed-bundle frame come back with a reason instead of a guess (`renderer-crash` / `no-stack` / `kill-shaped` / `no-installed-bundle-frame`). **`kill-shaped` was added on 10-19** and is the one that matters for the "your write mouth killed my host" claim: `exit=-1` plus no `dsh: fatal` line plus ≤6 frames means *the backend child was taken out from outside* — the same shape a `Stop-Process` restart leaves behind — so the attribution tool **refuses** to blame a plugin for it (`row.killShaped=true`). Default root is the desktop tree; a CLI instance points it with `DSH_BACKROOM_CRASH_LOGS=<dir>`. `dir` must sit inside an allowed root — this route is cookie-free, so it must not become a local file-read oracle; anything else gets **403**. |
 
 | `GET`/`POST /dsh-backroom/session?session=&key=` | **The narrow session mouth (closed by default)**: `GET` reads one allow-listed session's turn face from the projections that are *actually in the public bag* (`turnOutline`, an array of `{turn,seq,prompt,response}`, and `sessionStats.turns`) and returns `turnCount/lastTurn/lastResponseChars/asOfSeq/readable`; `POST` sends one prompt into that **already-registered** session, and `&wait=turn-end&timeoutMs=…` waits until a new turn appears **and** its `response` has been filled by `turn/end`, returning `ended/endedClaim/turnStarted/assistantResponded/waitedMs`. Only the official handlers are used — `sessionController.prompt(request, signal)` / `.projections(request, signal)`, **both arguments required**. Measured end-to-end on the packaged desktop 10-09: one prompt took `turnCount 1→2`, `asOfSeq 19→30`, and the durable log holds exactly two `turn/end reason:"completed"` with two replies. When the criterion cannot be read the route self-reports `endedClaim:"unreadable"` instead of calling it "not finished". (The earlier wording — read `turnBoundary.lastTurn` — was a guess; that unit is not in the public bag. See `docs/PLUGIN-RULES.md` §H.5.) |
 
@@ -42,9 +42,11 @@ Daily use, safety first and little friction:
 # when you do want to send one:
 powershell -File tools\start-desktop-with-mouth.ps1 -Sid <your session id>
 #  -> it mints a one-run key and prints it (never stored on disk, gone when the app exits),
-#     stops the running instance, restarts it with that env, waits for port 19387,
+#     stops the running instance, restarts it with that env, *discovers* the backend port,
 #     and prints the exact curl line to paste.
 ```
+
+**The backend port is no longer fixed (measured 10-19).** Release 0.2.0-rc.2 hard-coded `19387`; **0.2.1-rc.2 changed `dsh-desktop-host` to pass `--port 0`, so the OS assigns a fresh port every boot** (three values on one machine: `12469`, `12750`, `2495`). Consequence worth knowing: a liveness check that asks *"is 19387 listening?"* does not fail loudly on the new release — it answers *"nothing is listening"* forever, which is exactly how "the write mouth crashed my host" nearly got written down as fact. The shipped launcher therefore discovers the port instead: among the ports the `DeepSeek Harness.exe` PID family owns, the backend is the one whose `GET /dsh-backroom/probe` answers **200** (cookie-free). Without this plugin, take the one answering **401** with the official sentence `dsh web authentication required; reopen the URL printed by dsh web.` ⚠ The same PID family also owns **`9230`** on 0.2.1-rc.2 — that is the official inspector's CDP endpoint (`/json/version` reports `Browser:"dsh-experimental-inspector/0"`) and answers **404** on `/`; it is neither the backend nor a dead host. Ledger: `docs/compat/VERSIONS/0.2.1-rc.2/` P22/P28; `PITFALLS.md #107`.
 
 Why not keep the key in your user environment variables: that copy is plaintext, readable by any local process and by roaming/profile backups. Not persisting it buys *default-closed* plus *no stored secret* — it is a smaller exposure surface, not absolute security (a process that can read your env can already read your cookies).
 
@@ -58,7 +60,7 @@ The read-only routes need no cookie, but **a model in a session does not know th
 | `backroom_logs` | host log tail (`limit/level/contains`) | none, read-only |
 | `backroom_faults` | crash-log attribution (`limit/dir`) | none, read-only |
 | `backroom_workspace` | `list` the profile's workspaces, or `create` one through the official `workspaceController.create` (an existing path comes back `created:false`) | **yes**: `DSH_BACKROOM_WORKSPACE_ROOTS` (prefix list); unset ⇒ `disabled` |
-| `backroom_wsl_workspace` | `distros`/`ls`/`check` via `dsh-wsl-workspace`'s own loopback bridge; `create` composes in the order that plugin's client uses (official create, then its `registerWindows`/`setUser`) | `create`: `DSH_BACKROOM_WSL_DISTROS`; the three reads need nothing |
+| `backroom_wsl_workspace` | `distros`/`ls`/`check` via `dsh-wsl-workspace`'s own loopback bridge; `create` composes in the order that plugin's client uses (official create, then its `registerWindows`/`setUser`) | `create`: `DSH_BACKROOM_WSL_DISTROS`; the three reads need nothing. **Which port the bridge targets** (changed 10-19): explicit `DSH_BACKROOM_BRIDGE_BASE` > the loopback origin our own route was just requested through (from its `Host` header) > neither, in which case **not a byte is sent** and the reply says `bridge-base-unknown`. The old fallback guessed a hard-coded `19387`, which on new releases is an empty port and read as "the bridge is broken". `GET /dsh-backroom/probe` now carries a `bridge` field showing which of the three it would use. |
 | — | **the `session` route is deliberately not a tool** | safety first: no session gets a button that spends your quota |
 
 Two design notes: ① the WSL path **does not copy another plugin's private state** — `~/.dsh/wsl-workspaces.json` belongs to `dsh-wsl-workspace`, and we only delegate in its own call order; if the official create fails, registration is never attempted (no half-done workspace), and if registration fails the reply says so rather than reporting success. ② Path mapping (`/mnt/e/tmp` → `E:\tmp`, otherwise `\\wsl.localhost\<distro>\…`) and both allow-list checks are **exported pure functions** unit-tested directly, including "`E:/ab` is not inside `E:/a`".
@@ -73,7 +75,8 @@ Two design notes: ① the WSL path **does not copy another plugin's private stat
 # set before starting dsh — without them the route is as if it did not exist
 DSH_BACKROOM_SESSION_KEY=<a local secret>
 DSH_BACKROOM_SESSION_ALLOW=<sessionId1,sessionId2>
-curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=…&session=<listed id>&wait=turn-end&timeoutMs=60000" \
+# $P = the backend port, recognised as described above (random since 0.2.1-rc.2; the launcher prints it)
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/session?key=…&session=<listed id>&wait=turn-end&timeoutMs=60000" \
      -H 'content-type: application/json' -d '{"text":"reply with one word"}'
 ```
 
@@ -83,9 +86,10 @@ curl -s -X POST "http://127.0.0.1:19387/dsh-backroom/session?key=…&session=<li
 5. bounds: body ≤ 16 KB, text ≤ 4000 chars, wait clamped to 2 s–120 s. Waiting is a **deadline-bounded poll on the official projection that returns the readings** (`before`/`after`/`waitedMs`/`deadlineMs`), not a fixed sleep pretending to be determinism; refusals are counted per reason, never swallowed.
 
 ```bash
-curl -s http://127.0.0.1:19387/dsh-backroom/probe | head -c 4000
-curl -s "http://127.0.0.1:19387/dsh-backroom/logs?limit=50&level=warn"
-curl -s "http://127.0.0.1:19387/dsh-backroom/faults?limit=8"
+# read-only three: $P is the backend port you just recognised (random on new releases — do not paste 19387)
+curl -s "http://127.0.0.1:$P/dsh-backroom/probe" | head -c 4000
+curl -s "http://127.0.0.1:$P/dsh-backroom/logs?limit=50&level=warn"
+curl -s "http://127.0.0.1:$P/dsh-backroom/faults?limit=8"
 ```
 
 ### Quarantining the plugin that broke
@@ -114,8 +118,8 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <backup>       
 
 ## Requirements
 
-- dsh **0.2.0-rc.2** verified target; host half is plain ESM using only `node:util` / `node:fs` / `node:path`.
-- Attribution logic lives in `tools/fault-triage.mjs`, which is inside `package.json` `files` — a `file:` install that omits that file fails the whole package import.
+- dsh **0.2.0-rc.2 and 0.2.1-rc.2** verified on the packaged desktop (10-09 and 10-19); host half is plain ESM using only `node:util` / `node:fs` / `node:path`. ⚠ The backend port is fixed (`19387`) only on 0.2.0-rc.2 — from 0.2.1-rc.2 it is assigned per boot, see "The backend port is no longer fixed" above.
+- Attribution logic lives in `tools/fault-triage.mjs`, which is inside `package.json` `files` — a `file:` install that omits that file fails the whole package import. ⚠ The `faults` route **statically imports** it, so editing it needs one host restart before the route agrees with the CLI (`docs/PLUGIN-RULES.md` §H.6 2b).
 - A profile that loads bundles (`desktop` / `web`).
 
 ## Install
