@@ -26,6 +26,45 @@ Current build is the **probe + fault-attribution + narrow session mouth + sessio
 
 All six routes are registered on the plugin's own path prefix through `webServer.register()`, so they answer without the app's session cookie (like `/dsh-chamber/*`). `Cache-Control: no-store`. **The first four are read-only**; the two that act are gated behind an env key, and `sessions` must additionally clear the five gates below. No route writes to disk; the only disk write in this package is the CLI further down, and it writes only after taking a byte-for-byte backup outside the repository.
 
+### One-page usage for another agent (discovery, call format, env, limits)
+
+**How it is discovered** (in order of reliability): ① a model inside dsh sees tool names every turn ⇒ the tool surface carries **`backroom_entry`** (read-only; returns `baseUrl`, the call format of all six routes, every gate and the hard limits); ② any local process can `GET /dsh-backroom/presets` (**no key**); ③ the route table in this README.
+
+**Recognising `baseUrl`** (the port is random since 0.2.1-rc.2): among the listening ports of the `DeepSeek Harness.exe` PID family, take the one whose `GET /dsh-backroom/probe` answers **200**; or just run the launcher, which prints `backend port = …`. **Do not guess the port 0.2.0 hard-coded** — nothing listens there any more (`PITFALLS.md #107`).
+
+**Minimal call sequence** (`$P` = backend port, `$K` = the key the launcher printed):
+
+```bash
+# 0) roster (no key): which modes this machine has right now (standard default / ptc / minimal / cordis + four wsl-*)
+curl -s "http://127.0.0.1:$P/dsh-backroom/presets"
+
+# 1) create a session (needs the key; cwd must sit under DSH_BACKROOM_WORKSPACE_ROOTS)
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-type: application/json' \
+  -d '{"cwd":"D:/Temp/backroom-ws","agentPreset":"minimal","caller":"some-agent"}'
+# -> {"sessionId":"session-…","agentPreset":"minimal","titleState":{...},"quota":{...},"permissionPreset":"…"}
+
+# 2) prompt it once (a session this plugin created needs NO edit to DSH_BACKROOM_SESSION_ALLOW)
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/session?key=$K&session=<sid>&wait=turn-end&timeoutMs=90000" \
+  -H 'content-type: application/json' -d '{"text":"reply with one word"}'
+
+# 3) read the ledger (what this process built, what it spent, how many slots are left)
+curl -s "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K"
+
+# 4) take it back (only sessions this plugin created; archive hides, it does not delete)
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-type: application/json' \
+  -d '{"op":"archive","sessionId":"<sid>"}'
+```
+
+**Env**: see the Configuration table below (each gate's meaning and what "unset" does).
+
+**Limits (for the next agent — do not treat it as a universal remote)**:
+
+- `session` / `sessions` are **not model tools** ⇒ a model inside dsh cannot create sessions or send prompts by itself; an external process (your agent, CI, a script) must call HTTP with the key.
+- **No model switching**, **no permission-preset writes** (there is no `permissionPresets.set` in this package at all), **no deleting sessions** (the official archive only hides; disk residue is unmeasured).
+- Budget / quota / ledger are **per process**: restart clears `owned` and resets the hourly slots; it is not an audit log ("who built what yesterday" is not answerable).
+- Sending is bounded: 6 prompts/minute, text ≤4000 chars, wait 2–120 s; creating is 3/hour; budget defaults to 60,000 tokens (≈4 measured turns).
+- Prompting an archived session → 403 (it left `owned`); archiving **someone else's** session → 403 `not-owned`; an unreadable permission preset is reported (`permissionGate:"unknown-preset"`) but does not block.
+
 ### Why the constraints changed axis (this paragraph answers "isn't your safety rule a fake?")
 
 The user's challenge, verbatim: *"you send to dsh and it spends money, versus dsh spending money itself — isn't that the same? Is 'never give an arbitrary session a button that spends your quota' safety, or laziness?"* **On the money axis he is right**, and the old red line was mis-named: spending is not asymmetric — the bill lands in the same pocket either way. What actually moves out of his hands is three other things: **which directory the session is attached to, which permission preset is in force, and whether what got created can be taken back**. So the constraint changed axis instead of being dropped — five gates, each one an **exported pure function** (unit-tested, not "we'll be careful"):
@@ -76,6 +115,7 @@ The read-only routes need no cookie, but **a model in a session does not know th
 | Tool | What it does | Gate |
 |---|---|---|
 | `backroom_probe` | host shape: reachability matrix plus this plugin's own counters, including the session mouth's refusal ledger | none, read-only |
+| **`backroom_entry`** | **The entry card**: how to recognise the backend port, the call format of all six routes, every env gate, and the hard limits (no model switching / not tools / archive only hides). **This is how another agent discovers the entry** — tool names are what a model actually sees each turn | none, read-only |
 | `backroom_logs` | host log tail (`limit/level/contains`) | none, read-only |
 | `backroom_faults` | crash-log attribution (`limit/dir`) | none, read-only |
 | `backroom_workspace` | `list` the profile's workspaces, or `create` one through the official `workspaceController.create` (an existing path comes back `created:false`) | **yes**: `DSH_BACKROOM_WORKSPACE_ROOTS` (prefix list); unset ⇒ `disabled` |

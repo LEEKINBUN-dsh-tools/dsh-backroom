@@ -602,6 +602,8 @@ assert.ok(!/ap\.select\(/.test(codeOnly), '官面 select 是"改**活会话**的
 assert.ok(/if \(!ownedIds\.has\(sessionId\)\) return sendJson\(res, 403/.test(codeOnly), '归档那两枚方法前必须有 owned 闸（不在 owned 里就 403 not-owned）')
 assert.equal((codeOnly.match(/\.create\(/g) || []).length, 2, 'create 只许两处：工作区面 wc.create 与会话面 sc.create')
 assert.ok(/wc\.create\(/.test(codeOnly) && /sc\.create\(/.test(codeOnly), '那两处必须分别是 wc.create 与 sc.create')
+// 发现性：其他 agent 不会主动猜"dsh 里有个调试入口" ⇒ 工具面里必须有一枚只读入口卡（工具名是它们每轮看得见的东西）
+assert.ok(/name: 'backroom_entry'/.test(codeOnly), '工具面少了一枚 backroom_entry（入口卡）：没有它，别的 agent 不会主动发现这枚插件')
 // 阈值不许被调到刚好过门：这两枚默认数各有实测标度，动它们要带新数据（注释里就得写着来源）
 assert.ok(/SESSION_CREATE_LIMIT_PER_HOUR = 3/.test(codeOnly), '建会话名额默认＝3，改要带新的实测来源')
 assert.ok(/SESSION_BUDGET_TOKENS_PER_HOUR = 60_000/.test(codeOnly), '预算默认＝60,000 token（实测 14,920/回合 ×4），改要带新的实测来源')

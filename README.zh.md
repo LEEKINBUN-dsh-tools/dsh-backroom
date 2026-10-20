@@ -24,6 +24,48 @@
 | `GET /dsh-backroom/presets` | **只读，不要 key**：现读官面 `agentPresets.list()` 的名册（`{id,name?,description?,order?,broken?}`，激活失败那枚连原因一起回）＋`defaultId`，外加 `permissionPresets.catalog()`（`names`／`options`／`defaultPreset`）与**当前五把闸的状态**；如果官面默认权限档就是最宽那一枚，这里会直接给一句 `permissionWarning`。10-19 真宿主现读名册 **8 枚**＝`standard`(默认)／`ptc`／`minimal`／`cordis`＋四枚 `wsl-*` ⇒ **档位名一律运行时读，不写死**（名册随订阅开关变）。 |
 | `GET`/`POST /dsh-backroom/sessions?key=` | **建会话档（10-19 用户改判「不需要切换模型，其他做完」）**：POST `{cwd, agentPreset?, caller?}` 走官面 `sessionController.create(request)` 建一枚新会话（**模式在创建时一次带上**——官面 `agentPresets.select` 的 jsDoc 逐字写着只能"在第一回合之前"，所以已有会话改不了档）；POST `{op:'archive'\|'unarchive', sessionId}` 只能收**本插件自己建的**那几枚（走官面 `workspaceController.archiveSession`）。GET 回这枚进程的建设账（`owned`／`spendTokens`／名额／预算）。真宿主两发实测：建 `minimal` 与 `ptc` 各一枚、标题打成 `backroom:<caller>`、往新建会话里发一问 `ended:true`（`turn 0→1`、3.4 s、账本现刷 **18,100** token）、归档回 `archivedNow:true`＋`archivedSetSize:13`；越界 cwd ⇒ **403 `cwd-outside-roots`**、拿用户自己的会话去归档 ⇒ **403 `not-owned`**。 |
 
+### 给其他 agent 的一页用法（怎么发现它／调用格式／env／局限）
+
+**它怎么被发现**（按可靠度排）：① dsh 会话里的模型每轮都看得见工具名 ⇒ 工具面里有 **`backroom_entry`**（只读，回 `baseUrl`＋六枚端点调用格式＋每把闸＋硬局限）；② 任何本机进程都能 `GET /dsh-backroom/presets`（**不要 key**）；③ 本 README 的端点表。
+
+**认 baseUrl**（0.2.1-rc.2 起端口随机）：在 `DeepSeek Harness.exe` 那一族 PID 的监听口里，找 `GET /dsh-backroom/probe` 回 **200** 的那一枚；或直接跑启动器，它会打印 `backend port = …`。**别猜 0.2.0 那个写死的端口**——新版那一口永远没人听（`PITFALLS.md #107`）。
+
+**最小调用序列**（`$P`＝后端端口，`$K`＝启动器打印的那把 key）：
+
+```bash
+# 0) 名册（免 key）：这台机器此刻有哪些模式（standard 默认 / ptc / minimal / cordis + 四枚 wsl-*）
+curl -s "http://127.0.0.1:$P/dsh-backroom/presets"
+
+# 1) 建一枚会话（要 key；cwd 必须落在 DSH_BACKROOM_WORKSPACE_ROOTS 内）
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-type: application/json' \
+  -d '{"cwd":"D:/Temp/backroom-ws","agentPreset":"minimal","caller":"some-agent"}'
+# → {"sessionId":"session-…","agentPreset":"minimal","titleState":{...},"quota":{...},"permissionPreset":"…"}
+
+# 2) 往里发一条（本插件建的会话**不需要**再改 DSH_BACKROOM_SESSION_ALLOW）
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/session?key=$K&session=<sid>&wait=turn-end&timeoutMs=90000" \
+  -H 'content-type: application/json' -d '{"text":"只回一个字：好"}'
+# → {"accepted":true,"ended":true,"turnStarted":true,…,"before":{…},"after":{…}}
+
+# 3) 看账（本进程建了什么、花了多少、还能建几枚）
+curl -s "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K"
+
+# 4) 收回去（只准收自己造的；归档＝隐藏不是删除）
+curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-type: application/json' \
+  -d '{"op":"archive","sessionId":"<sid>"}'
+```
+
+**env 一览**：见下面「配置」那节（每把闸的含义与"不设＝什么"都写着）。
+
+**局限（写给下一位 agent，别拿它当万能的）**：
+
+- `session`／`sessions` **不是模型工具** ⇒ dsh 里的模型不能自己建会话/发消息；得由外部进程（你的 agent、CI、脚本）带 key 调 HTTP。
+- **不能切模型**、**不能改权限档**（插件结构上就没有 `permissionPresets.set`）、**不能删会话**（官面只有归档＝隐藏，盘上残留未量化）。
+- 预算／名额／账本都是**按进程**的：重启后 owned 清空、名额复位；它不是审计账本，"昨天谁建过"查不到。
+- 发消息有界：6 发/分钟、text ≤4000 字符、等待 2–120 s；建会话 3 枚/小时；预算默认 60,000 token（≈4 回合，标度见上）。
+- 归档之后再往里发 ⇒ 403（owned 出局）；拿**别人的**会话去归档 ⇒ 403 `not-owned`；档位读不到时只报不拦（`permissionGate:"unknown-preset"`）。
+
+
+
 ### 约束为什么换轴（这一段是回答"你的安全约束是不是伪命题"）
 
 **用户 10-19 的原话**：「你发给 dsh，让它花钱，和 dsh 自己花的钱，不是一样的吗？绝不给任意会话一个替你花钱的按钮是安全还是偷懒？」——**这句在"钱"这一维上是对的**，旧那句红线把风险说成了支出，而支出没有不对称（账单同一个口袋）。所以那句"绝不新建会话"**有一半是伪命题**，另一半（也是真的那一半）是另外三样：**这枚会话挂哪棵目录／生效哪一枚权限档／造出来能不能收回去**。约束因此**换轴而不取消**，五把闸每把都长在官面实物上、且都是**导出的纯函数**（夹具直验，不等真宿主）：
@@ -82,6 +124,7 @@ powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 
 | 工具名 | 干什么 | 要不要开关 |
 |---|---|---|
 | `backroom_probe` | 宿主形状：可达矩阵、本插件各项计数（含会话入口的拒绝账） | 不要，只读 |
+| **`backroom_entry`** | **入口卡**：后端口怎么认、六枚端点调用格式、每把 env 闸、以及硬局限（不切模型／不是工具／归档只是隐藏）。**别的 agent 要靠这一枚发现这个入口**——工具名是模型每轮真正看得见的东西 | 不要，只读 |
 | `backroom_logs` | 宿主日志尾（`limit/level/contains`） | 不要，只读 |
 | `backroom_faults` | 崩溃件归因（`limit/dir`） | 不要，只读 |
 | `backroom_workspace` | `list` 列工作区／`create` 建一枚（官面 `workspaceController.create`，已存在回 `created:false`） | **要**：`DSH_BACKROOM_WORKSPACE_ROOTS`（逗号/分号前缀名单）；没设＝`disabled` |
