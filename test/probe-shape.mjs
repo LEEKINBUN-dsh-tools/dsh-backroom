@@ -42,7 +42,7 @@ function makeLoggerFace() {
 	return { face, exporters }
 }
 
-function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true } = {}) {
+function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true, agentPresets, permissionPresets, workspaceController } = {}) {
 	const table = new Map()
 	// 真宿主同形：`ctx.get('logger')` 取不到（10-04 现读 absent），只有 `ctx.logger` 属性拿得到
 	// ⇒ logger 一律**不进名字表**，改成属性 getter，让"属性回退"那半条路真被测到。
@@ -52,6 +52,11 @@ function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionContr
 	table.set('profileContext', { dir: 'X', patchPath: 'Y' })
 	if (tools !== false) table.set('tools', { __captured: [], register(tool) { this.__captured.push(tool); return () => {} } })
 	if (sessionController !== false) table.set('sessionController', sessionController || { prompt() {}, follow() {}, list() {} })
+	// 10-19 建会话那一档要用的三面（名册／权限档目录／工作区归档通道）：默认**不在场**，
+	// 由第 20/21 步逐发塞进去——"取不到就如实 absent、且不带走路由"那一档也要被验到，不能只验 happy path。
+	if (agentPresets) table.set('agentPresets', agentPresets)
+	if (permissionPresets) table.set('permissionPresets', permissionPresets)
+	if (workspaceController) table.set('workspaceController', workspaceController)
 	table.set('pluginInventory', { list: () => [{ id: 'backroom', enabled: true, fiberPhase: 'active' }] })
 
 	const effects = []
@@ -138,14 +143,14 @@ const { face: loggerFace, exporters } = makeLoggerFace()
 const { ctx, effects, routes } = makeCtx({ logger: loggerFace })
 mod.apply(ctx)
 
-assert.equal(routes.length, 4, `注册到的路由数=${routes.length}`)
-assert.deepEqual(routes.map((r) => r.path).sort(), ['/dsh-backroom/faults', '/dsh-backroom/logs', '/dsh-backroom/probe', '/dsh-backroom/session'])
+assert.equal(routes.length, 6, `注册到的路由数=${routes.length}`)
+assert.deepEqual(routes.map((r) => r.path).sort(), ['/dsh-backroom/faults', '/dsh-backroom/logs', '/dsh-backroom/presets', '/dsh-backroom/probe', '/dsh-backroom/session', '/dsh-backroom/sessions'])
 assert.ok(routes.every((r) => r.path.startsWith('/dsh-backroom/')))
 assert.ok(!routes.some((r) => r.path.startsWith('/api')), '绝不占用 /api 前缀（RULES §C4）')
 assert.equal(exporters.length, 1, 'ctx.logger.exporter 注册成功')
 const obs = globalThis.__backroomObservations
 assert.equal(obs.exporterState, 'registered')
-assert.equal(obs.routeRegistrations, 4)
+assert.equal(obs.routeRegistrations, 6)
 assert.equal(obs.mountErrors, 0, `mountErrors=${obs.mountErrors} lastError=${obs.lastError}`)
 assert.equal(obs.bufferLenAtRegister, 2, '记下注册时的缓冲长度，用来判"能不能回放"')
 assert.equal(obs.loggerFace, 'present-via-property', '真宿主同形：logger 走属性能拿到')
@@ -154,7 +159,7 @@ assert.notEqual(console.error, originalError, 'console.error 被包')
 assert.notEqual(console.warn, originalWarn, 'console.warn 被包')
 assert.equal(console.log, originalLog, '10-04 事故后收窄：热路径 console.log/info **不再**被接管')
 assert.equal(console.info, originalInfo, 'console.info 保持原样')
-step('装载形状：4 枚路由（3 枚只读＋1 枚默认关的会话窄口，无 /api）＋exporter＋console 只包 error/warn 两枚')
+step('装载形状：6 枚路由（4 枚只读：probe/logs/faults/presets＋2 枚动手：sessions 建归档／session 发消息，都要 env key，无 /api）＋exporter＋console 只包 error/warn 两枚')
 
 // ── 4. 两路日志同框，且 src 计到 obs 上 ────────────────────────────────────
 exporters[0].export({ sn: 10, ts: 1234, name: 'dsh-hmr', type: 'info', level: 1, args: ['reloading', { id: 'backroom' }] })
@@ -266,7 +271,7 @@ const degradedBody = degradedRes.json
 assert.equal(degradedBody.hmr.face, 'absent')
 assert.ok(degradedBody.plugin.loggerFace.startsWith('absent'))
 assert.equal(degradedBody.plugin.exporterState, 'not-attempted')
-assert.equal(degradedBody.plugin.routeRegistrations, 4, '取不到 logger 也要照样把四枚端点挂上（会话窄口自己按 env 关门）')
+assert.equal(degradedBody.plugin.routeRegistrations, 6, '取不到 logger 也要照样把六枚端点挂上（动手那两枚自己按 env 关门）')
 assert.ok(degradedBody.plugin.consolePatchState.includes('already-wrapped'), '重复 apply 走"已包过就不再包"那一路')
 step('降级档：没有 logger／没有 hmr 时端点照挂、状态写成 absent；重复 apply 不叠第二层补丁')
 
@@ -515,7 +520,7 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	await settle()
 	const st1 = globalThis.__backroomObservations.toolsState
 	assert.match(String(st1.status), /^absent/, `没有 tools 服务时应报 absent，实际=${st1.status}`)
-	assert.equal(noTools.routes.length, 4, '工具面缺席不许带走那四枚路由')
+	assert.equal(noTools.routes.length, 6, '工具面缺席不许带走那六枚路由')
 	assert.equal(st1.registered.length, 0)
 
 	const withTools = makeCtx({})
@@ -524,7 +529,7 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	const st2 = globalThis.__backroomObservations.toolsState
 	assert.ok(/^import-failed/.test(String(st2.status)) || /^registered\(/.test(String(st2.status)),
 		`工具面状态只能是 import-failed 或 registered(n)，实际=${st2.status}`)
-	assert.equal(withTools.routes.length, 4, '工具注册失败也不许带走那四枚路由（整包不能被工具面带走）')
+	assert.equal(withTools.routes.length, 6, '工具注册失败也不许带走那六枚路由（整包不能被工具面带走）')
 	const captured = withTools.ctx.get('tools').__captured
 	if (/^import-failed/.test(String(st2.status))) assert.equal(captured.length, 0, 'import 失败时不该有任何一枚被注册')
 	await disposeAll(noTools); await disposeAll(withTools)
@@ -570,19 +575,49 @@ for (const forbidden of ['getLinked(', 'watchConfig(', 'runExclusive(', 'runRelo
 }
 assert.ok(/'not-called/.test(codeOnly), 'hmr 那一格要写成 not-called 的说明串（把这次事故留在码里，不只是文档里）')
 // 会话窄口的五把闸也要交给闸，不靠"下次记得"：任一 env 名字从代码里消失＝那把闸被拆了，红。
-for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS']) {
-	assert.ok(codeOnly.includes(gate), `会话窄口的闸少了一枚：${gate} 不再出现在代码里`)
+// 10-19 用户改判「不需要切换模型，其他做完」⇒ 名单里加上建会话那一档的四把新闸（少一枚就红，同旧形状）。
+for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS']) {
+	assert.ok(codeOnly.includes(gate), `窄口／建会话的闸少了一枚：${gate} 不再出现在代码里`)
 }
 assert.equal((codeOnly.match(/\.prompt\(/g) || []).length, 1, '官面 prompt 只许有一个调用点（就在窄口 handler 里），探针那枚端点永远不许动它')
 assert.ok(/crypto\.randomUUID\(\)/.test(codeOnly), 'requestId 必须自带（官面靠它做幂等去重，少了就会重复入队）')
 assert.ok(/timingSafeEqual/.test(codeOnly), 'key 比较必须等时，不许用 ===')
-assert.ok(!/session\/create/.test(codeOnly), '绝不调官面 session/create（新建会话由人做，不给插件）')
-// 会话那枚面上只许出现这两次方法调用；其余一律红（10-09 加工作区 create 后，旧判据"看见 .create( 就红"会误伤官面工作区创建，
-// 所以换成"按哪枚面、调了什么"判：sessionController 面只许 prompt/projections，create 只许出现在工作区那枚面上一次）
-const sessionFaceCalls = (codeOnly.match(/\bsc\.[a-zA-Z]+\(/g) || [])
-assert.deepEqual([...new Set(sessionFaceCalls)].sort(), ['sc.projections(', 'sc.prompt('], `对会话面调了多余的方法：${JSON.stringify([...new Set(sessionFaceCalls)])}`)
-assert.equal((codeOnly.match(/\.create\(/g) || []).length, 1, 'create 只许一处（官面工作区那枚 wc.create）')
-assert.ok(/wc\.create\(/.test(codeOnly), '那一处 create 必须是工作区面的 wc.create(')
+// 10-19 改判：旧哨兵写的是"绝不允许出现 session/create"，用户裁定换成**逐面白名单**＋owned 边界。
+// 判据从"看见 .create( 就红"换成"哪一枚面、调了哪一枚方法"——名字仍然一枚都不许多（这条替换的动因见 README「约束换轴」一节）。
+const FACE_ALLOWED = {
+	sc: ['create', 'prompt', 'projections', 'rename'], // 会话面：建／发／读／打标题
+	wc: ['create', 'archiveSession', 'unarchiveSession'], // 工作区面：建工作区（10-09）＋收回自己造的会话（10-19）
+	ap: ['list'], // 预设名册面：只许读名册（defaultId 是 getter，不带括号）
+	pp: ['catalog'], // 权限档面：**只许读 catalog**，改档一律红
+}
+const faceMethods = (code, alias) => [...new Set([...code.matchAll(new RegExp(`\\b${alias}\\.([a-zA-Z]+)\\(`, 'g'))].map((m) => m[1]))]
+for (const [alias, allowed] of Object.entries(FACE_ALLOWED)) {
+	const seen = faceMethods(codeOnly, alias)
+	const extras = seen.filter((m) => !allowed.includes(m))
+	assert.deepEqual(extras, [], `${alias} 面上调了白名单外的方法：${JSON.stringify(seen)}（允许 ${JSON.stringify(allowed)}）`)
+}
+assert.ok(!/pp\.set\(/.test(codeOnly) && !/permissionPresets\.set\(/.test(codeOnly), '权限档只许读不许改：出现 set 即红（"不许放宽档"这一条不靠自觉）')
+assert.ok(!/ap\.select\(/.test(codeOnly), '官面 select 是"改**活会话**的档位"，本插件只在新建时带 agentPreset ⇒ 出现即红')
+// owned 边界：归档/取消归档必须先证这枚会话是本插件建的（否则"收回去"会变成动用户的会话）
+assert.ok(/if \(!ownedIds\.has\(sessionId\)\) return sendJson\(res, 403/.test(codeOnly), '归档那两枚方法前必须有 owned 闸（不在 owned 里就 403 not-owned）')
+assert.equal((codeOnly.match(/\.create\(/g) || []).length, 2, 'create 只许两处：工作区面 wc.create 与会话面 sc.create')
+assert.ok(/wc\.create\(/.test(codeOnly) && /sc\.create\(/.test(codeOnly), '那两处必须分别是 wc.create 与 sc.create')
+// 阈值不许被调到刚好过门：这两枚默认数各有实测标度，动它们要带新数据（注释里就得写着来源）
+assert.ok(/SESSION_CREATE_LIMIT_PER_HOUR = 3/.test(codeOnly), '建会话名额默认＝3，改要带新的实测来源')
+assert.ok(/SESSION_BUDGET_TOKENS_PER_HOUR = 60_000/.test(codeOnly), '预算默认＝60,000 token（实测 14,920/回合 ×4），改要带新的实测来源')
+// 正对照（空闸＝没闸）：把白名单外的方法塞回去，逐面必须**恰在这一发红**
+const mutatedSelect = codeOnly.replace('await sc.projections(', 'await sc.cancel(')
+assert.ok(mutatedSelect !== codeOnly, '对照件没替换成功＝这发对照是空的')
+{
+	const seen = faceMethods(mutatedSelect, 'sc')
+	assert.ok(seen.includes('cancel'), '对照件里 cancel 没出现＝这发对照打偏（换成真代码里不存在的那一发了）')
+	assert.ok(!FACE_ALLOWED.sc.includes('cancel'), '会话面白名单必须不包含 cancel')
+}
+{
+	const mutatedSet = codeOnly.replace('pp.catalog()', 'pp.set(sessionId, "danger-full-access")')
+	assert.ok(mutatedSet !== codeOnly, '对照件没替换成功（pp.catalog() 不在了？）＝这发对照是空的')
+	assert.ok(/pp\.set\(/.test(mutatedSet), '退回"改权限档"那一形时档位闸必须红')
+}
 // PITFALLS #99 的第三次踩到（10-05 写实验靶插件时又写成块体＋当场 dispose）⇒ 交给闸，不靠小心。
 // 只许两种形状：`ctx.effect(() => disposer, …)` 或官面那种 `ctx.effect(() => () => {…}, …)`；块体一律红。
 const effectShapeGate = /ctx\.effect\(\(\)\s*=>\s*\{/
@@ -593,7 +628,7 @@ assert.ok(mutated !== codeOnly, '对照件没替换成功＝这发对照是空�
 assert.ok(effectShapeGate.test(mutated), '退回 #99 旧形时块体闸必须红')
 // 官面那一形（块体但返回 disposer）不许被误伤
 assert.ok(!effectShapeGate.test("ctx.effect(() => () => { disposed = true }, 'x')"), '官面形状被误伤＝闸太粗')
-step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**外来面只许那三枚白名单方法（会话面只有 prompt/projections、工作区面只有 create 一处）**、ctx.effect 不写块体、**窄口与两把新白名单的 env 名字一枚都不能少**')
+step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**四面逐面白名单（sc＝create/prompt/projections/rename、wc＝create/archiveSession/unarchiveSession、ap＝只 list、pp＝只 catalog ⇒ 改权限档与改活会话档位一律红）**、归档前必须有 owned 闸、create 恰两处、两枚阈值带实测标度、ctx.effect 不写块体、**窄口与建会话的 12 枚 env 名字一枚都不能少**，另含两发合成负对照（塞回 cancel／pp.set 必须红）')
 
 // ── 18. WSL 桥基址：0.2.1-rc.2 起端口随机，"猜一个写死的端口"这种默认值必须被闸住 ─────
 {
@@ -621,6 +656,248 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 	assert.ok(mutated !== codeOnly, '对照件没替换成功＝这发对照是空的')
 	assert.ok(hardcoded.test(mutated), '退回"猜 19387"那一形时闸必须红（空闸＝没闸）')
 	step('哨兵：本体里不许再有 19387／DSH_PORT 回落（新版端口随机 ⇒ 静默打旧口＝假"桥坏了"），退回旧形的合成件必红')
+}
+
+// ── 20. 建会话那一档（10-19 用户改判「不需要切换模型，其他做完」）：六把闸逐把红过一遍才放行 ──
+{
+	const ENVS = ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS']
+	const saved = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]))
+	// 名册里有激活失败的那一枚（官面 list 的自陈就是"Every current declaration, including activation failures"）
+	const ROSTER = [{ id: 'standard', name: '标准' }, { id: 'ptc', name: 'PTC' }, { id: 'cordis', name: '创造', broken: 'activation failed: missing module' }]
+	const boot = ({ env = {}, roster = ROSTER, spend = 0, presetValue = 'standard', renameThrows = false, noPresets = false } = {}) => {
+		for (const k of ENVS) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
+		const calls = []
+		const sc = {
+			async create(request) { calls.push({ m: 'create', request }); return { sessionId: 'sess-new-9', ...(typeof request.agentPreset === 'string' ? { agentPreset: request.agentPreset } : {}) } },
+			async rename(request) { calls.push({ m: 'rename', request }); if (renameThrows) throw Object.assign(new Error('not resumed'), { code: 'session/not-found' }); return {} },
+			async prompt(request, signal) { calls.push({ m: 'prompt', request, hasSignal: Boolean(signal) }); return { accepted: true } },
+			async projections() {
+				return {
+					asOfSeq: 5,
+					values: {
+						turnOutline: [], sessionStats: { turns: 0 }, modelSelection: null,
+						permissions: { currentValue: presetValue },
+						tokenUsage: { uncachedInputTokens: spend, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+					},
+				}
+			},
+		}
+		const made = makeCtx({
+			sessionController: sc,
+			agentPresets: noPresets ? undefined : { list: async () => roster, defaultId: 'standard' },
+			// 假 catalog 用**本机实测那一形**：defaultPreset 就是最宽那一档（第 20 步要验的正是"这一格会被回显出来"）
+			permissionPresets: { names: ['standard', 'danger-full-access'], catalog: () => ({ options: [{ value: 'standard', name: '标准' }, { value: 'danger-full-access', name: 'danger-full-access' }], defaultPreset: 'danger-full-access' }) },
+			workspaceController: {
+				// 官面这一发回的是**整个归档集**（真宿主实测 12 枚，含用户早就归档掉的 11 枚），
+				// 夹具也按这一形回，否则"我归档了几枚"会被读成"归档集有几枚"（10-19 真宿主那发就是这么露出来的）
+				async archiveSession(q) { calls.push({ m: 'archive', q }); return { archivedSessionIds: ['someone-elses-already-archived', q.sessionId] } },
+				async unarchiveSession(q) { calls.push({ m: 'unarchive', q }); return { archivedSessionIds: [] } },
+			},
+		})
+		mod.apply(made.ctx)
+		return {
+			calls, obs: globalThis.__backroomObservations,
+			sessions: routeOf(made.routes, 'sessions'), session: routeOf(made.routes, 'session'), presets: routeOf(made.routes, 'presets'),
+		}
+	}
+	const KEY = 'k'
+	const post = (route, qs, body) => callAs(route, 'POST', qs, body)
+	const goodEnv = { 'DSH_BACKROOM_SESSION_KEY': KEY, 'DSH_BACKROOM_WORKSPACE_ROOTS': 'D:/Temp' }
+	try {
+		// 闸 0：没 key ⇒ 整枚端点等于不存在，且官面 create 一枚都不许被调到
+		let f = boot({ env: {} })
+		let r = await post(f.sessions, '?', JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.json.reason, 'disabled')
+		assert.equal(f.calls.length, 0, '没放行之前官面 create 一枚都不该被调到')
+
+		// 闸 A 范围：roots 没设＝建会话整格 disabled；越界的 cwd 单独拒；两种失败都**要退回名额**
+		f = boot({ env: { DSH_BACKROOM_SESSION_KEY: KEY } })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.status, 403)
+		assert.equal(r.json.reason, 'no-create-roots')
+		let ledger = await callAs(f.sessions, 'GET', `?key=${KEY}`)
+		assert.equal(ledger.json.quota.used, 0, '失败的那一发必须把名额退回（一次越界不许白吃一小时）')
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_WORKSPACE_ROOTS': 'E:/only-here' } })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.json.reason, 'cwd-outside-roots')
+		assert.equal(f.calls.length, 0, '越界的一发不许打到官面')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ caller: 'x' }))
+		assert.equal(r.json.reason, 'no-cwd', '不收 workspaceId：只认"目录由这枚会话自己拥有"那一支，白名单才判得动')
+
+		// 闸 B 名册：读不到名册就**不建**（不许猜档位名）；名册外／激活失败／二次名单外，三档各回各话
+		f = boot({ env: goodEnv, noPresets: true })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', agentPreset: 'standard', caller: 'x' }))
+		assert.equal(r.status, 502)
+		assert.equal(r.json.reason, 'roster-unavailable')
+		f = boot({ env: goodEnv })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', agentPreset: 'nope', caller: 'x' }))
+		assert.equal(r.json.reason, 'not-in-roster')
+		assert.deepEqual(r.json.roster, ['standard', 'ptc', 'cordis'], '拒的时候要回名册，让下一个人不用再去猜')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', agentPreset: 'cordis', caller: 'x' }))
+		assert.equal(r.json.reason, 'broken-preset', '带 broken 的那一枚是激活失败的，不许建')
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_ALLOW_PRESETS': 'standard' } })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', agentPreset: 'ptc', caller: 'x' }))
+		assert.equal(r.json.reason, 'not-allowed-preset')
+
+		// 闸 C 名额：默认 3/小时；用完就 429，且不碰官面
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR': '1' } })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.status, 200, `第一发该放行：${JSON.stringify(r.json)}`)
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/b', caller: 'x' }))
+		assert.equal(r.status, 429)
+		assert.equal(r.json.reason, 'quota-exceeded')
+
+		// 闸 D 预算：本插件已建会话的累计 token 到顶 ⇒ 建第二发拒、往里发也拒
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_TOKEN_BUDGET': '100' }, spend: 500 })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.status, 200)
+		// 账本 GET 必须**先刷再报**：真宿主抓到过"发完一问账本还是 0"那一格（spendTokens 只在 create 时算过一次）
+		const ledgerNow = await callAs(f.sessions, 'GET', `?key=${KEY}`)
+		assert.equal(ledgerNow.json.spendTokens, 500, `GET 账本要把花费刷成现读值，实际=${JSON.stringify(ledgerNow.json)}`)
+		assert.ok(ledgerNow.json.lastSpendReadAt, '花费读数是哪一刻读的也要一起给')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/b', caller: 'x' }))
+		assert.equal(r.json.reason, 'budget-exceeded')
+		assert.equal(r.json.spentTokens, 500)
+		assert.equal(r.json.limitTokens, 100)
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: '再一发' }))
+		assert.equal(r.json.reason, 'budget-exceeded', '预算对"自己建的会话"两头都拦：既不再建，也不再往里发')
+
+		// 闸 E 档位：**默认名单为空 ⇒ 只回显不拦**（本机官面默认档实测就是 danger-full-access，拦它＝新建全废）；
+		// 点名禁止之后才拒"往里发"。改档这一手本插件做不到（哨兵禁 pp.set），所以"不放宽"是结构性的。
+		f = boot({ env: { ...goodEnv }, presetValue: 'danger-full-access' })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.json.permissionGate, 'ok', '没点名禁止名单时不许自作主张地拦')
+		assert.equal(r.json.permissionPreset, 'danger-full-access', '但必须把实际生效档**逐发回显**出来')
+		assert.equal(r.json.officialDefaultPermission, 'danger-full-access', '这台机器的官面默认档也要一起回显')
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: '发一发' }))
+		assert.equal(r.status, 200, '默认名单为空时这一发要能进去（只回显不拦）')
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_DENY_PRESETS': 'danger-full-access' }, presetValue: 'danger-full-access' })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		assert.equal(r.json.permissionGate, 'denied-preset', '点名之后建完的读数就要报出判决（不等到发消息才说）')
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: '发一发' }))
+		assert.equal(r.status, 403, '点名禁止之后，"往里发"必须被档位闸拦下')
+		assert.equal(r.json.reason, 'denied-preset')
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_DENY_PRESETS': '' }, presetValue: 'danger-full-access' })
+		await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: '发一发' }))
+		assert.equal(r.status, 200, `显式清空禁止名单＝这一档放开：${JSON.stringify(r.json)}`)
+		// 读不到档位（未 seed 的会话）＝**只报不拦**：把"我没读到"当"它危险"就是端口那一格的复刻
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_DENY_PRESETS': 'danger-full-access' }, presetValue: null })
+		await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', caller: 'x' }))
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: '发一发' }))
+		assert.equal(r.status, 200)
+		assert.equal(r.json.permissionGate, 'unknown-preset')
+
+		// 放行那一发的完整形状：官面 create 收到 {cwd, agentPreset}，标题带调用方，owned 自动进窄口名单
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_TOKEN_BUDGET': '60000' } })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/proj', agentPreset: 'standard', caller: 'orchestrator' }))
+		assert.equal(r.status, 200, `实际=${JSON.stringify(r.json)}`)
+		assert.equal(r.json.sessionId, 'sess-new-9')
+		assert.equal(r.json.agentPreset, 'standard')
+		assert.equal(r.json.titleState.ok, true)
+		assert.equal(f.calls.find((c) => c.m === 'create').request.cwd, 'D:/Temp/proj', 'cwd 走 path.resolve＋正斜杠那一形递过去（白名单判的就是这一形）')
+		assert.equal(f.calls.find((c) => c.m === 'rename').request.title, 'backroom:orchestrator')
+		// 没改 env 名单，也能往**自己刚建的那枚**发（owned 自动放行；别人的会话仍然要 env）
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9&mode=steer`, JSON.stringify({ text: '插一句' }))
+		assert.equal(r.status, 200)
+		assert.equal(r.json.mode, 'steer')
+		assert.equal(f.calls.filter((c) => c.m === 'prompt')[0].request.mode, 'steer', '档位要原样递进官面 request（enum 现读＝queue|steer）')
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9&mode=bogus`, JSON.stringify({ text: 'x' }))
+		assert.equal(r.status, 400)
+		assert.equal(r.json.reason, 'bad-mode')
+		r = await post(f.session, `?key=${KEY}&session=someone-elses`, JSON.stringify({ text: 'x' }))
+		assert.equal(r.json.reason, 'no-allowlist', 'env 名单没设时，别人开的会话一枚都动不了——owned 不外扩')
+		process.env.DSH_BACKROOM_SESSION_ALLOW = 'sess-other-1'
+		r = await post(f.session, `?key=${KEY}&session=someone-elses`, JSON.stringify({ text: 'x' }))
+		assert.equal(r.json.reason, 'not-allowlisted', '名单设了但不含它 ⇒ 另一枚原因，两档不许混成一格')
+
+		// 收回：只准收自己造的；收回去之后 owned 不再放行（"我造的才准我动"两头都验）
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ op: 'archive', sessionId: 'someone-elses' }))
+		assert.equal(r.status, 403)
+		assert.equal(r.json.reason, 'not-owned')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ op: 'archive', sessionId: 'sess-new-9' }))
+		assert.equal(r.status, 200)
+		assert.equal(r.json.archivedNow, true, '回包必须自己算出"刚收的那一枚在不在归档集里"')
+		assert.equal(r.json.archivedSetSize, 2, '归档集里那一枚别人的不许被算成我收的')
+		assert.match(r.json.note, /不是删除/, '回包必须写明"归档＝隐藏"，不许冒充清干净')
+		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: 'x' }))
+		assert.equal(r.json.reason, 'not-allowlisted', '归档后 owned 撤了，本插件不再认这枚')
+		// 拒绝按原因分档计数要留痕（不是只回一句 403）
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR': '1' } })
+		await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/x' }))
+		await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/y' }))
+		assert.equal(f.obs.session.denied['quota-exceeded'], 1, `拒绝账没记上：${JSON.stringify(f.obs.session.denied)}`)
+		step('建会话那一档：key／范围／名册／名额／预算／档位六把闸逐把红过一遍才放行；owned 自动进窄口、归档后自动出局；每发拒绝都分原因留痕')
+
+		// presets 只读档：名册、默认档位、以及**当前几把闸的状态**都要报出来（不写死档位名的实物凭据）
+		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_ALLOW_PRESETS': 'standard' } })
+		const p = await callAs(f.presets, 'GET', '?')
+		assert.equal(p.status, 200)
+		assert.deepEqual(p.json.agentPresets.presets.map((x) => x.id), ['standard', 'ptc', 'cordis'])
+		assert.equal(p.json.agentPresets.presets[2].broken, 'activation failed: missing module', '激活失败那枚要带原因回，别藏')
+		assert.equal(p.json.agentPresets.defaultId, 'standard')
+		assert.equal(p.json.permissionPresets.defaultPreset, 'danger-full-access')
+		assert.match(p.json.permissionWarning, /官面默认权限档/, '官面默认档是最宽那一枚时，presets 端点要主动把这句提醒说出来')
+		assert.equal(p.json.gates.createRoots, 'set')
+		assert.equal(p.status, 200, 'presets 端点不要 key（只读名册，改动一律走另两枚）')
+		f = boot({ env: {}, noPresets: true })
+		const p2 = await callAs(f.presets, 'GET', '?')
+		assert.equal(p2.json.agentPresets.face, 'absent', '取不到名册要如实 absent，不许顶一份内置清单')
+		step('presets 只读档：名册＋默认档位＋闸状态三项同框；名册取不到就写 absent')
+	} finally {
+		for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+	}
+}
+
+// ── 21. 建会话那一档的判定式（纯函数直验，含名额退回与档位闸的两副面孔）───────────
+{
+	assert.equal(mod.presetGate([{ id: 'a' }], 'a', ''), 'ok')
+	assert.equal(mod.presetGate([{ id: 'a', broken: 'boom' }], 'a', ''), 'broken-preset')
+	assert.equal(mod.presetGate([{ id: 'a' }], 'b', ''), 'not-in-roster')
+	assert.equal(mod.presetGate(null, 'a', ''), 'roster-unavailable', '名册读不到绝不能当成"通过"')
+	assert.equal(mod.presetGate([{ id: 'a' }, { id: 'b' }], 'b', 'a'), 'not-allowed-preset', '二次白名单设了就生效')
+	assert.equal(mod.presetGate([{ id: 'a' }], 'a', 'a'), 'ok')
+
+	const w = mod.hourWindow(2)
+	assert.equal(w.take(1000).ok, true)
+	assert.equal(w.take(2000).ok, true)
+	assert.equal(w.take(3000).ok, false, '窗口内第三发必须拒')
+	assert.equal(w.undo(3000).used, 1, 'undo 要把刚占的那格退回（否则一次失败白吃一小时）')
+	assert.equal(w.take(3000).ok, true, '退回了就该还能再占')
+	assert.equal(w.peek(4000).used, 2)
+	const expired = mod.hourWindow(1)
+	expired.take(0)
+	assert.equal(expired.peek(3_600_001).used, 0, '窗口滑过就该清零')
+	const nolimit = mod.hourWindow(0)
+	assert.equal(nolimit.take(0).ok, true, 'limit=0＝不设名额（不是"一枚都不许"，别和 disabled 混）')
+
+	assert.equal(mod.budgetGate(10, 0).verdict, 'unbounded', '上限 0＝不限，不是"全部拒"')
+	assert.equal(mod.budgetGate(99, 100).verdict, 'ok')
+	assert.equal(mod.budgetGate(100, 100).verdict, 'budget-exceeded', '到顶就拒（>=，不留"刚好等于还放行"的缝）')
+
+	assert.equal(mod.denyGate('standard', ''), 'ok')
+	assert.equal(mod.denyGate('danger-full-access', ''), 'ok', '显式清空名单＝放开（要放开的人自己点名）')
+	assert.equal(mod.denyGate('danger-full-access', undefined), 'ok', 'env 没设＝默认不拦——本机官面默认档就是 danger-full-access，拦它等于新建的会话全废（10-19 实测改判）')
+	assert.equal(mod.denyGate('danger-full-access', 'danger-full-access'), 'denied-preset', '点名了才拦')
+	assert.equal(mod.denyGate('danger-full-access', 'danger-full-access;other'), 'denied-preset', '分隔符两种都吃')
+	assert.equal(mod.denyGate('workspace-write', 'danger-full-access'), 'ok', '不在名单里的档不许被误伤')
+	assert.equal(mod.denyGate(null, 'danger-full-access'), 'unknown-preset', '读不到值要单独一档，不许与"被禁"混成一格')
+
+	assert.deepEqual(mod.callerMarker('orchestrator'), { ok: true, title: 'backroom:orchestrator', caller: 'orchestrator' })
+	assert.equal(mod.callerMarker('  ').ok, false, '空调用方＝拒，不能建出一枚无主的')
+	{
+		const weird = mod.callerMarker('../../etc:passwd')
+		assert.equal(weird.ok, true)
+		assert.ok(!/[\/\\:]/.test(weird.caller), `消毒后调用方名里不许留路径/冒号字符：${weird.caller}`)
+		assert.ok(!weird.caller.includes('..'), '不许留 `..` 这种形状（标题会进侧栏，也会被抄进别的脚本）')
+		assert.ok(weird.title.startsWith('backroom:') && weird.title === `backroom:${weird.caller}`, '标题＝固定前缀＋消毒后的名字，别自创形状')
+	}
+	assert.equal(mod.callerMarker('x'.repeat(90)).caller.length, 40, '调用方名字封顶 40')
+
+	assert.equal(mod.tokenSpend({ uncachedInputTokens: 13760, outputTokens: 2, cacheReadTokens: 0, cacheWriteTokens: 0 }), 13762, '四枚桶求和＝本窗实测第一回合那个数')
+	assert.equal(mod.tokenSpend(null), 0)
+	assert.equal(mod.tokenSpend({ outputTokens: 'x', uncachedInputTokens: 5 }), 5, '非数值的桶跳过，不 NaN')
+	step('判定式直验：名册三档、名额窗口与 undo、预算 >=、档位两副面孔（被禁／读不到）、调用方封顶与消毒、token 四桶求和')
 }
 
 console.log(`\nPASS dsh-backroom probe suite — ${passed} steps, 0 failures（夹具档，非真宿主读数）`)

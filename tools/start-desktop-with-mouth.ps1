@@ -10,9 +10,22 @@
 #   answers our cookie-free /dsh-backroom/probe with 200 (fallback: root path answering 401 with the
 #   official "dsh web authentication required" sentence).
 param(
-  [Parameter(Mandatory=$true)][string]$Sid,
+  # -Sid is OPTIONAL: pass it when you want to prompt an existing session; leave it out when you only
+  # need the create route (created sessions are reachable without any allow-list entry).
+  [string]$Sid = '',
   [string]$Key = '',
   [string]$Exe = '',
+  # 10-19 gates for the create-session mouth. All optional; unset means that gate stays closed:
+  #   -Roots      comma/semicolon-separated directory prefixes a created Session may own (WITHOUT it, POST /sessions is 'disabled')
+  #   -Presets    second allow-list of agent-preset ids (the roster itself is read from the official agentPresets.list();
+  #               leaving this empty means "anything in the roster that is not broken")
+  #   -DenyPresets permission-preset values that must be refused; empty string means "use the plugin default (danger-full-access)"
+  #   -MaxSessions / -Budget  hourly quota and token budget; defaults 3 and 60000 (60000 ~ 4 turns of measured 14,920 tokens/turn)
+  [string]$Roots = '',
+  [string]$Presets = '',
+  [string]$DenyPresets = '',
+  [string]$MaxSessions = '',
+  [string]$Budget = '',
   [switch]$NoRestart
 )
 $ErrorActionPreference = 'Stop'
@@ -87,9 +100,18 @@ if ($running.Count -gt 0) {
 }
 if ($startNew) {
   $env:DSH_BACKROOM_SESSION_KEY = $Key
-  $env:DSH_BACKROOM_SESSION_ALLOW = $Sid
+  # No -Sid => no allow-list at all: existing sessions stay unreachable, only sessions this run
+  # creates are usable. An unset gate must stay unset (closed), not become an empty "allow".
+  if ($Sid -ne '') { $env:DSH_BACKROOM_SESSION_ALLOW = $Sid }
+  # Only set what the operator actually named -- an unset gate must stay unset (closed), not "empty = open".
+  if ($Roots -ne '') { $env:DSH_BACKROOM_WORKSPACE_ROOTS = $Roots }
+  if ($Presets -ne '') { $env:DSH_BACKROOM_ALLOW_PRESETS = $Presets }
+  if ($DenyPresets -ne '') { $env:DSH_BACKROOM_DENY_PRESETS = $DenyPresets }
+  if ($MaxSessions -ne '') { $env:DSH_BACKROOM_MAX_SESSIONS_PER_HOUR = $MaxSessions }
+  if ($Budget -ne '') { $env:DSH_BACKROOM_TOKEN_BUDGET = $Budget }
   Start-Process -FilePath $Exe
-  Write-Output ('started. allow=' + $Sid)
+  Write-Output ('started. existing sessions reachable: ' + $(if ($Sid -eq '') { 'none (no -Sid given; only sessions this run creates are usable)' } else { $Sid }))
+  Write-Output ('gates: roots=' + $(if ($Roots -eq '') { '(unset: POST /sessions stays disabled)' } else { $Roots }) + ' presets=' + $(if ($Presets -eq '') { '(unset: roster decides)' } else { $Presets }) + ' maxSessions=' + $(if ($MaxSessions -eq '') { '(default 3/h)' } else { $MaxSessions }) + ' budget=' + $(if ($Budget -eq '') { '(default 60000 tokens)' } else { $Budget }))
 }
 Write-Output ('use this key for this run: ' + $Key)
 
@@ -102,4 +124,13 @@ for ($i = 0; $i -lt 120; $i++) {
 if (-not $found) { Write-Output 'FAIL: 120s passed and no backend port was recognised (slow start, or the plugin is not in this profile)'; exit 1 }
 Write-Output ('backend port = ' + $found)
 Write-Output ('probe: curl -s "http://127.0.0.1:' + $found + '/dsh-backroom/probe"')
-Write-Output ('mouth: curl -s -X POST "http://127.0.0.1:' + $found + '/dsh-backroom/session?key=' + $Key + '&session=' + $Sid + '&wait=turn-end" -H "content-type: application/json" -d "{\"text\":\"ping\"}"')
+if ($Sid -ne '') {
+  Write-Output ('mouth: curl -s -X POST "http://127.0.0.1:' + $found + '/dsh-backroom/session?key=' + $Key + '&session=' + $Sid + '&wait=turn-end" -H "content-type: application/json" -d "{\"text\":\"ping\"}"')
+} else {
+  Write-Output 'mouth: (no -Sid) create a session first, then POST /dsh-backroom/session with that id'
+}
+Write-Output ('roster: curl -s "http://127.0.0.1:' + $found + '/dsh-backroom/presets"   (no key needed, read-only)')
+if ($Roots -ne '') {
+  Write-Output ('create: curl -s -X POST "http://127.0.0.1:' + $found + '/dsh-backroom/sessions?key=' + $Key + '" -H "content-type: application/json" -d "{\"cwd\":\"' + ($Roots -split '[;,]')[0].Trim() + '\",\"caller\":\"launcher\"}"')
+}
+Write-Output ('ledger: curl -s "http://127.0.0.1:' + $found + '/dsh-backroom/sessions?key=' + $Key + '"   (what this process created, spent, and may still archive)')
