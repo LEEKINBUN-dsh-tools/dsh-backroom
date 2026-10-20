@@ -100,10 +100,10 @@ const call = (route, url) => {
 
 // 会话窄口那枚 handler 是 async 的，还要吃 POST body ⇒ 单独一发：先挂 handler，
 // 再在 setImmediate 里把 body 当 data/end 事件喂进去（readBody 那时已经注册好监听）。
-const callAs = async (route, method, url, body) => {
+const callAs = async (route, method, url, body, headers) => {
 	const res = makeRes()
 	const listeners = {}
-	const req = { url, method, on(ev, fn) { (listeners[ev] ||= []).push(fn) }, destroy() {} }
+	const req = { url, method, headers: headers || {}, on(ev, fn) { (listeners[ev] ||= []).push(fn) }, destroy() {} }
 	const pending = route.handler(req, res)
 	setImmediate(() => {
 		if (body !== undefined && body !== null) for (const fn of listeners.data || []) fn(Buffer.from(body, 'utf8'))
@@ -489,6 +489,26 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 		assert.equal(waitD.json.reason, 'no-sessionController')
 		assert.equal(waitD.json.ok, false)
 
+		// 10-19 尾部：其他 agent 用请求头递 key ⇒ 不许再落成 no-key（这条来自实物反馈：对的 key 也吃 no-key）
+		process.env.DSH_BACKROOM_SESSION_KEY = KEY
+		process.env.DSH_BACKROOM_SESSION_ALLOW = SID
+		process.env.DSH_BACKROOM_KEY_FILE = 'C:/Temp/dsh-backroom-key.txt'
+		{
+			const hdrCtx = makeCtx({ sessionController: gateFake })
+			mod.apply(hdrCtx.ctx)
+			const hdrRoute = routeOf(hdrCtx.routes, 'session')
+			const h1 = await callAs(hdrRoute, 'POST', `?session=${SID}`, JSON.stringify({ text: 'header key' }), { 'x-backroom-key': KEY })
+			assert.equal(h1.status, 200, `请求头带 key 必须放行：${JSON.stringify(h1.json)}`)
+			const h2 = await callAs(hdrRoute, 'POST', `?session=${SID}`, JSON.stringify({ text: 'bearer key' }), { authorization: `Bearer ${KEY}` })
+			assert.equal(h2.status, 200, `Authorization: Bearer 也必须放行：${JSON.stringify(h2.json)}`)
+			const h3 = await callAs(hdrRoute, 'POST', `?session=${SID}`, JSON.stringify({ text: 'x' }), { 'x-backroom-key': 'wrong' })
+			assert.equal(h3.json.reason, 'bad-key', '错的 header key 要能分辨成 bad-key（不是 no-key）')
+			const h4 = await callAs(hdrRoute, 'POST', `?session=${SID}`, JSON.stringify({ text: 'x' }))
+			assert.match(h4.json.hint, /dsh-backroom-key\.txt/, 'no-key 的提示必须告诉他们 key 在哪（keyFile）')
+			for (const d of hdrCtx.effects) { if (typeof d === 'function') await d(); else if (d && typeof d.dispose === 'function') await d.dispose() }
+		}
+		delete process.env.DSH_BACKROOM_KEY_FILE
+
 		// 拒绝要按原因留痕（不许静默吞）
 		assert.ok(sessObs.denied.disabled >= 1 && sessObs.denied['bad-key'] >= 1 && sessObs.denied['not-allowlisted'] >= 1, JSON.stringify(sessObs.denied))
 		for (const disposer of [...advancing.effects, ...stalled.effects, ...absent.effects, ...fast.effects]) {
@@ -576,7 +596,7 @@ for (const forbidden of ['getLinked(', 'watchConfig(', 'runExclusive(', 'runRelo
 assert.ok(/'not-called/.test(codeOnly), 'hmr 那一格要写成 not-called 的说明串（把这次事故留在码里，不只是文档里）')
 // 会话窄口的五把闸也要交给闸，不靠"下次记得"：任一 env 名字从代码里消失＝那把闸被拆了，红。
 // 10-19 用户改判「不需要切换模型，其他做完」⇒ 名单里加上建会话那一档的四把新闸（少一枚就红，同旧形状）。
-for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS']) {
+for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS', 'DSH_BACKROOM_KEY_FILE']) {
 	assert.ok(codeOnly.includes(gate), `窄口／建会话的闸少了一枚：${gate} 不再出现在代码里`)
 }
 assert.equal((codeOnly.match(/\.prompt\(/g) || []).length, 1, '官面 prompt 只许有一个调用点（就在窄口 handler 里），探针那枚端点永远不许动它')
@@ -824,6 +844,14 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 		assert.match(r.json.note, /不是删除/, '回包必须写明"归档＝隐藏"，不许冒充清干净')
 		r = await post(f.session, `?key=${KEY}&session=sess-new-9`, JSON.stringify({ text: 'x' }))
 		assert.equal(r.json.reason, 'not-allowlisted', '归档后 owned 撤了，本插件不再认这枚')
+		// 同一把 key 的另外两种递法在建会话端点上也要成立（其他 agent 默认写 header，不写查询串）
+		f = boot({ env: goodEnv })
+		r = await callAs(f.sessions, 'POST', '', JSON.stringify({ cwd: 'D:/Temp/hdr', caller: 'hdr' }), { 'x-backroom-key': KEY })
+		assert.equal(r.status, 200, `sessions 端点也要收请求头 key：${JSON.stringify(r.json)}`)
+		const hdr2 = boot({ env: goodEnv })
+		r = await callAs(hdr2.sessions, 'POST', '', JSON.stringify({ cwd: 'D:/Temp/hdr', caller: 'hdr' }), { authorization: `Bearer ${KEY}` })
+		assert.equal(r.status, 200, `Bearer 那一形也要成立：${JSON.stringify(r.json)}`)
+
 		// 拒绝按原因分档计数要留痕（不是只回一句 403）
 		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR': '1' } })
 		await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/x' }))
@@ -838,6 +866,9 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 		assert.deepEqual(p.json.agentPresets.presets.map((x) => x.id), ['standard', 'ptc', 'cordis'])
 		assert.equal(p.json.agentPresets.presets[2].broken, 'activation failed: missing module', '激活失败那枚要带原因回，别藏')
 		assert.equal(p.json.agentPresets.defaultId, 'standard')
+		// 发现性：名册这一发要顺手把"两枚动手端点怎么带 key、key 在哪"交出去（否则下一个人继续吃 no-key）
+		assert.deepEqual(p.json.auth.schemes, ['?key=<k>', 'header x-backroom-key: <k>', 'header Authorization: Bearer <k>'])
+		assert.equal(p.json.auth.envName, 'DSH_BACKROOM_SESSION_KEY')
 		assert.equal(p.json.permissionPresets.defaultPreset, 'danger-full-access')
 		assert.match(p.json.permissionWarning, /官面默认权限档/, '官面默认档是最宽那一枚时，presets 端点要主动把这句提醒说出来')
 		assert.equal(p.json.gates.createRoots, 'set')

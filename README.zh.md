@@ -56,6 +56,8 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
 
 **env 一览**：见下面「配置」那节（每把闸的含义与"不设＝什么"都写着）。
 
+**key 怎么带（10-19 尾部按实物反馈补的一格）**：三选一——`?key=<k>`、请求头 `x-backroom-key: <k>`、或 `Authorization: Bearer <k>`；**只用请求头是最推荐的写法**（查询串会进各种日志）。别的 agent 不必知道 key 的值：启动器默认把它写在一个**可读的文件**里（默认 `%TEMP%\dsh-backroom-key.txt`，可用 `-KeyFile` 改；`-Ephemeral` 才是"一次性、不落盘"的老行为），并把这个路径设进 `DSH_BACKROOM_KEY_FILE`；读不到文件时，`no-key` 的报错正文里会直接给出这个路径。⚠ 老实说：**本机任意进程都读得到那个文件** ⇒ 它挡的是"手滑/没带凭据"，不是恶意本机进程；真正的边界仍是 allowlist／roots／名额／预算／owned 那五把闸。
+
 **局限（写给下一位 agent，别拿它当万能的）**：
 
 - `session`／`sessions` **不是模型工具** ⇒ dsh 里的模型不能自己建会话/发消息；得由外部进程（你的 agent、CI、脚本）带 key 调 HTTP。
@@ -224,6 +226,7 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>    
 | 变量 | 管哪枚端点 | 不设的意思 |
 |---|---|---|
 | `DSH_BACKROOM_SESSION_KEY` | `session`、`sessions` | 两枚动手端点一律 `403 disabled`（等于不存在） |
+| `DSH_BACKROOM_KEY_FILE` | 两枚动手端点的报错提示与入口卡 | 不设＝`no-key` 只能说"在 env 里"，指不出文件；启动器默认把它设成 `%TEMP%\dsh-backroom-key.txt` |
 | `DSH_BACKROOM_SESSION_ALLOW` | `session` | 只有本进程刚经 `/sessions` 建出来的那些（owned）可达 |
 | `DSH_BACKROOM_WORKSPACE_ROOTS` | `sessions`、`backroom_workspace` 工具 | **建会话整格 `disabled`**；那枚工具报 `disabled` |
 | `DSH_BACKROOM_ALLOW_PRESETS` | `sessions` | 不加二次白名单，官面名册本身就是白名单（带 `broken` 的一律拒） |

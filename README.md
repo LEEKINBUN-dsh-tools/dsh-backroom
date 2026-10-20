@@ -57,6 +57,8 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
 
 **Env**: see the Configuration table below (each gate's meaning and what "unset" does).
 
+**How to carry the key** (added 10-19 after a real report: another agent passed the key in a header and still got `no-key`, because only `?key=` was accepted): pick one of `?key=<k>`, header `x-backroom-key: <k>`, or `Authorization: Bearer <k>` — **a header is the recommended form** (query strings end up in logs). Another agent does not need to know the value: by default the launcher **writes it to a readable file** (`%TEMP%\dsh-backroom-key.txt`, override with `-KeyFile`; `-Ephemeral` keeps the old mint-and-forget behaviour) and exports that path as `DSH_BACKROOM_KEY_FILE`; if the file is missing, the `no-key` reply names the path. To be plain about the security: **any local process can read that file** — it stops slips and unauthenticated callers, not a hostile local process. The real boundaries stay the five gates (allow-list, roots, quota, budget, owned).
+
 **Limits (for the next agent — do not treat it as a universal remote)**:
 
 - `session` / `sessions` are **not model tools** ⇒ a model inside dsh cannot create sessions or send prompts by itself; an external process (your agent, CI, a script) must call HTTP with the key.
@@ -213,6 +215,7 @@ No settings namespace: everything is read from the **environment of the process 
 | Variable | Route(s) | Unset means |
 |---|---|---|
 | `DSH_BACKROOM_SESSION_KEY` | `session`, `sessions` | both acting routes answer `403 disabled` (they do not exist) |
+| `DSH_BACKROOM_KEY_FILE` | the `no-key` hint and the entry card | unset ⇒ the hint can only point at the env var; the launcher sets it to `%TEMP%\dsh-backroom-key.txt` by default |
 | `DSH_BACKROOM_SESSION_ALLOW` | `session` | only sessions this process created (`owned`) are reachable |
 | `DSH_BACKROOM_WORKSPACE_ROOTS` | `sessions`, `backroom_workspace` tool | create is `disabled`; the workspace tool reports `disabled` |
 | `DSH_BACKROOM_ALLOW_PRESETS` | `sessions` | the official roster is the allow-list (nothing `broken`) |

@@ -14,12 +14,17 @@ param(
   # need the create route (created sessions are reachable without any allow-list entry).
   [string]$Sid = '',
   [string]$Key = '',
+  # Where the one key for this machine lives. Default: %TEMP%\dsh-backroom-key.txt. The launcher writes it
+  # (the plugin itself never writes files), so other agents can read the path instead of guessing a value.
+  # -Ephemeral mints a throwaway key and does NOT write the file (previous behaviour).
+  [string]$KeyFile = '',
+  [switch]$Ephemeral,
   [string]$Exe = '',
   # 10-19 gates for the create-session mouth. All optional; unset means that gate stays closed:
   #   -Roots      comma/semicolon-separated directory prefixes a created Session may own (WITHOUT it, POST /sessions is 'disabled')
   #   -Presets    second allow-list of agent-preset ids (the roster itself is read from the official agentPresets.list();
   #               leaving this empty means "anything in the roster that is not broken")
-  #   -DenyPresets permission-preset values that must be refused; empty string means "use the plugin default (danger-full-access)"
+  #   -DenyPresets permission-preset values that must be refused; unset/empty means "display the in-force preset, never block"
   #   -MaxSessions / -Budget  hourly quota and token budget; defaults 3 and 60000 (60000 ~ 4 turns of measured 14,920 tokens/turn)
   [string]$Roots = '',
   [string]$Presets = '',
@@ -39,11 +44,29 @@ if ($Exe -eq '') {
   if ($Exe -eq '') { Write-Output 'FAIL: cannot find "DeepSeek Harness.exe"; pass -Exe "<full path>"'; exit 2 }
 }
 Write-Output ('exe: ' + $Exe)
-if ($Key -eq '') {
-  # no key supplied => mint a throwaway one and print it, so nothing is stored anywhere
-  $bytes = New-Object byte[] 16
-  [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-  $Key = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+# Key resolution (10-19 tail: other agents reported "the two acting routes still answer no-key" - the real
+# cause was that the key only existed in this shell). Default behaviour: keep ONE key per machine in a file
+# other local agents can read; -Ephemeral keeps the old mint-and-forget behaviour.
+if ($KeyFile -eq '') { $KeyFile = Join-Path $env:TEMP 'dsh-backroom-key.txt' }
+if ($Ephemeral) {
+  if ($Key -eq '') {
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $Key = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+  }
+  Write-Output ('ephemeral key (not written to disk): ' + $Key)
+} else {
+  if ($Key -eq '' -and (Test-Path -LiteralPath $KeyFile)) {
+    $Key = (Get-Content -LiteralPath $KeyFile -Raw).Trim()
+    if ($Key -ne '') { Write-Output ('reusing the key stored at ' + $KeyFile) }
+  }
+  if ($Key -eq '') {
+    $bytes = New-Object byte[] 16
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $Key = ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+  }
+  Set-Content -LiteralPath $KeyFile -Value $Key -NoNewline -Encoding ascii
+  Write-Output ('key file: ' + $KeyFile + '  (other agents should READ this file, not guess the key)')
 }
 
 function Get-BackendPorts {
@@ -100,6 +123,7 @@ if ($running.Count -gt 0) {
 }
 if ($startNew) {
   $env:DSH_BACKROOM_SESSION_KEY = $Key
+  if (-not $Ephemeral) { $env:DSH_BACKROOM_KEY_FILE = $KeyFile }
   # No -Sid => no allow-list at all: existing sessions stay unreachable, only sessions this run
   # creates are usable. An unset gate must stay unset (closed), not become an empty "allow".
   if ($Sid -ne '') { $env:DSH_BACKROOM_SESSION_ALLOW = $Sid }
@@ -113,7 +137,7 @@ if ($startNew) {
   Write-Output ('started. existing sessions reachable: ' + $(if ($Sid -eq '') { 'none (no -Sid given; only sessions this run creates are usable)' } else { $Sid }))
   Write-Output ('gates: roots=' + $(if ($Roots -eq '') { '(unset: POST /sessions stays disabled)' } else { $Roots }) + ' presets=' + $(if ($Presets -eq '') { '(unset: roster decides)' } else { $Presets }) + ' maxSessions=' + $(if ($MaxSessions -eq '') { '(default 3/h)' } else { $MaxSessions }) + ' budget=' + $(if ($Budget -eq '') { '(default 60000 tokens)' } else { $Budget }))
 }
-Write-Output ('use this key for this run: ' + $Key)
+Write-Output ('use this key: ' + $Key + $(if ($Ephemeral) { '  (ephemeral: not on disk)' } else { '  (also stored at the key file above; agents may read that file instead)' }))
 
 $found = $null
 for ($i = 0; $i -lt 120; $i++) {
