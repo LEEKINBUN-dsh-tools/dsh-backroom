@@ -58,6 +58,11 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
 
 **key 怎么带（10-19 尾部按实物反馈补的一格）**：三选一——`?key=<k>`、请求头 `x-backroom-key: <k>`、或 `Authorization: Bearer <k>`；**只用请求头是最推荐的写法**（查询串会进各种日志）。别的 agent 不必知道 key 的值：启动器默认把它写在一个**可读的文件**里（默认 `%TEMP%\dsh-backroom-key.txt`，可用 `-KeyFile` 改；`-Ephemeral` 才是"一次性、不落盘"的老行为），并把这个路径设进 `DSH_BACKROOM_KEY_FILE`；读不到文件时，`no-key` 的报错正文里会直接给出这个路径。⚠ 老实说：**本机任意进程都读得到那个文件** ⇒ 它挡的是"手滑/没带凭据"，不是恶意本机进程；真正的边界仍是 allowlist／roots／名额／预算／owned 那五把闸。
 
+**`workspaceId` 那一支的三个已知坑（10-30 由另一枚会话实跑后补）**：
+1. **roots 要按宿主归一后的形填**：先读 `<DSH_HOME>/storages/workspace.json` 里 `tables.workspaces[<id>].path`——宿主会把它存成**大写盘符/大写目录**（实测 `D:\TEMP\issue129-real\fixture-ws`，而你建时敲的是 `D:\Temp\…`），再拿**它**的前缀写 `DSH_BACKROOM_WORKSPACE_ROOTS`。`rootGate` 在 win32 上折叠大小写、并把 `\` 归一成 `/`，但**两个形必须指向同一棵目录**这一点得由你按记录来写。
+2. **`create` 可能"会话先落盘、attach 才失败"**（路径大小写不一致时就是这个形状，官面原文 `session "…" was created but could not attach to workspace …`）。失败回包会带 **`orphanSessionId`**：它**不在**本插件的 owned 账里，本插件也不会替你归档 ⇒ 请在侧栏/工作区里手动处理，或按 id 自己调官面 `archiveSession`。
+3. **模型/凭据不在本插件的范围内**：一轮回合可能以 `turn/end.reason.kind = "error"` 收场（例如 provider 的 key 401），此时 `spendTokens = 0`、`tool/call = 0`。我们的 `ended` 判据是 **`turnCount` 增 且 `lastResponseChars > 0`**，所以**错误收场会读成 `ended:false`**——判"到底跑没跑"请回 durable 日志的 `turn/end.reason`，别只看本端点。另外实测的 **14,920 token/回合是 `sensenova/deepseek-v4-flash` 的数**（桌面端），换 provider 或带 bash 工具调用都不适用。
+
 **局限（写给下一位 agent，别拿它当万能的）**：
 
 - `session`／`sessions` **不是模型工具** ⇒ dsh 里的模型不能自己建会话/发消息；得由外部进程（你的 agent、CI、脚本）带 key 调 HTTP。

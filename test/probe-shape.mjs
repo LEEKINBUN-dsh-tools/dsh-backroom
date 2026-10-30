@@ -697,11 +697,21 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 	const saved = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]))
 	// 名册里有激活失败的那一枚（官面 list 的自陈就是"Every current declaration, including activation failures"）
 	const ROSTER = [{ id: 'standard', name: '标准' }, { id: 'ptc', name: 'PTC' }, { id: 'cordis', name: '创造', broken: 'activation failed: missing module' }]
-	const boot = ({ env = {}, roster = ROSTER, spend = 0, presetValue = 'standard', renameThrows = false, noPresets = false, workspaces = null } = {}) => {
+	const boot = ({ env = {}, roster = ROSTER, spend = 0, presetValue = 'standard', renameThrows = false, noPresets = false, workspaces = null, createThrows = null } = {}) => {
 		for (const k of ENVS) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
 		const calls = []
 		const sc = {
-			async create(request) { calls.push({ m: 'create', request }); return { sessionId: 'sess-new-9', ...(typeof request.agentPreset === 'string' ? { agentPreset: request.agentPreset } : {}) } },
+			async create(request) {
+				calls.push({ m: 'create', request })
+				// "created but could not attach" 那一形（10-30 真宿主原文）：会话先落盘、attach 才失败
+				if (createThrows === 'attach') {
+					const w = Array.isArray(workspaces) ? workspaces.find((x) => x.workspaceId === request.workspaceId) : null
+					if (w) w.sessionIds = [...(w.sessionIds || []), 'sess-orphan-1']
+					throw Object.assign(new Error('session "sess-orphan-1" was created but could not attach to workspace'), { code: 'workspace/attach-failed' })
+				}
+				if (createThrows === 'plain') throw Object.assign(new Error('create refused'), { code: 'session/invalid' })
+				return { sessionId: 'sess-new-9', ...(typeof request.agentPreset === 'string' ? { agentPreset: request.agentPreset } : {}) }
+			},
 			async rename(request) { calls.push({ m: 'rename', request }); if (renameThrows) throw Object.assign(new Error('not resumed'), { code: 'session/not-found' }); return {} },
 			async prompt(request, signal) { calls.push({ m: 'prompt', request, hasSignal: Boolean(signal) }); return { accepted: true } },
 			async projections() {
@@ -795,6 +805,20 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 		assert.deepEqual(f.calls.filter((c) => c.m === 'create').pop().request, { agentPreset: 'standard', workspaceId: 'ws-in' }, 'workspaceId 那一支不许把 cwd 也塞进 request')
 		assert.equal(r.json.joinedWorkspaceId, 'ws-in')
 		assert.equal(r.json.ownedCwd, null)
+
+		// 10-30 真宿主那一形：会话先落盘、attach 才失败（路径大小写不一致）⇒ 失败回包必须点名孤儿会话，
+		// 而 owned 账必须仍是干净的（本插件不认领它、也不替它归档）
+		f = boot({ env: goodEnv, createThrows: 'attach', workspaces: [{ workspaceId: 'ws-in', path: 'D:/Temp/proj-a', sessionIds: ['sess-old'] }] })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ workspaceId: 'ws-in', agentPreset: 'standard', caller: 'x' }))
+		assert.equal(r.status, 502)
+		assert.equal(r.json.orphanSessionId, 'sess-orphan-1', 'attach 失败留下的那枚必须被点名（否则侧栏里多一枚无人认领的）')
+		assert.match(r.json.hint, /orphanSessionId/, '提示要说明它不在本插件账上')
+		ledger = await callAs(f.sessions, 'GET', `?key=${KEY}`)
+		assert.deepEqual(ledger.json.owned, [], '孤儿不许混进 owned')
+		f = boot({ env: goodEnv, createThrows: 'plain', workspaces: [{ workspaceId: 'ws-in', path: 'D:/Temp/proj-a', sessionIds: ['sess-old'] }] })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ workspaceId: 'ws-in', agentPreset: 'standard', caller: 'x' }))
+		assert.equal(r.status, 502)
+		assert.equal('orphanSessionId' in r.json, false, '没有新会话时不许编一个 id 出来')
 
 		// 闸 C 名额：默认 3/小时；用完就 429，且不碰官面
 		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR': '1' } })

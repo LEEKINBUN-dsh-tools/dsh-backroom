@@ -55,9 +55,14 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
   -d '{"op":"archive","sessionId":"<sid>"}'
 ```
 
-**Env**: see the Configuration table below (each gate's meaning and what "unset" does).
+**Three known traps on the `workspaceId` branch** (added 10-30 after another session ran it for real):
+1. **Fill roots with the host-canonical form**: read `tables.workspaces[<id>].path` from `<DSH_HOME>/storages/workspace.json` first — the host stores it with **upper-case drive/directories** (measured `D:\TEMP\issue129-real\fixture-ws` while the operator had typed `D:\Temp\…`) — then use *that* prefix for `DSH_BACKROOM_WORKSPACE_ROOTS`. `rootGate` folds case on win32 and normalises `\` to `/`, but both shapes have to point at the same directory, and that is on the caller to get from the record.
+2. **`create` can leave a session behind**: the official call may create the session and only then fail to attach it (exact wording `session "…" was created but could not attach to workspace …`, which happens when the paths differ in case). The failure reply carries **`orphanSessionId`**; it is **not** in this plugin's `owned` ledger and this plugin will not archive it for you — clean it up in the sidebar/workspace, or call the official `archiveSession` by that id yourself.
+3. **Model/credentials are out of scope**: a turn can end with `turn/end.reason.kind = "error"` (e.g. the provider key returns 401); then `spendTokens = 0` and `tool/call = 0`. Our `ended` criterion is **`turnCount` increased and `lastResponseChars > 0`**, so an errored turn reads as `ended:false` — check the durable log's `turn/end.reason` before concluding "it never ran". Also, the measured **14,920 tokens/turn is a `sensenova/deepseek-v4-flash` figure** (desktop); it does not transfer to another provider or to a turn that runs bash tools.
 
 **How to carry the key** (added 10-19 after a real report: another agent passed the key in a header and still got `no-key`, because only `?key=` was accepted): pick one of `?key=<k>`, header `x-backroom-key: <k>`, or `Authorization: Bearer <k>` — **a header is the recommended form** (query strings end up in logs). Another agent does not need to know the value: by default the launcher **writes it to a readable file** (`%TEMP%\dsh-backroom-key.txt`, override with `-KeyFile`; `-Ephemeral` keeps the old mint-and-forget behaviour) and exports that path as `DSH_BACKROOM_KEY_FILE`; if the file is missing, the `no-key` reply names the path. To be plain about the security: **any local process can read that file** — it stops slips and unauthenticated callers, not a hostile local process. The real boundaries stay the five gates (allow-list, roots, quota, budget, owned).
+
+**Env**: see the Configuration table below (each gate's meaning and what "unset" does).
 
 **Limits (for the next agent — do not treat it as a universal remote)**:
 
