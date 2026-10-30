@@ -569,6 +569,12 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	assert.equal(mod.rootGate('E:/dsh-plugins', 'E:/dsh-plugins'), 'ok', '根本身也算在内')
 	assert.equal(mod.rootGate('E:/dsh-plugins', 'C:/Users/whoever/x'), 'outside-roots')
 	assert.equal(mod.rootGate('E:/a', 'E:/ab/x'), 'outside-roots', '前缀要按路径段判，E:/ab 不许被 E:/a 放过')
+	if (process.platform === 'win32') {
+		// 10-30 实测：工作区记录里是小写盘符，roots 按人习惯写大写 ⇒ 逐字比会误判成越界
+		assert.equal(mod.rootGate('D:\\Temp\\issue129-real', 'd:\\temp\\issue129-real\\fixture-ws'), 'ok', 'win32 上大小写要折叠')
+		assert.equal(mod.rootGate('d:\\temp', 'D:\\TEMP\\x'), 'ok', '两个方向都要折叠')
+		assert.equal(mod.rootGate('D:\\Temp\\issue129-real', 'D:\\Temp\\issue129-real2'), 'outside-roots', '折叠之后仍按路径段判')
+	}
 	assert.equal(mod.distroGate('', 'Ubuntu'), 'disabled')
 	assert.equal(mod.distroGate('Ubuntu, Debian', 'Ubuntu'), 'ok', '逗号两侧的空格要能吃掉')
 	assert.equal(mod.distroGate('Ubuntu', 'calc'), 'not-allowed-distro')

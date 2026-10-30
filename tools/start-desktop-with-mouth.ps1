@@ -44,6 +44,17 @@ if ($Exe -eq '') {
   if ($Exe -eq '') { Write-Output 'FAIL: cannot find "DeepSeek Harness.exe"; pass -Exe "<full path>"'; exit 2 }
 }
 Write-Output ('exe: ' + $Exe)
+# 10-30 single-variable measurement: if ELECTRON_RUN_AS_NODE=1 is inherited by this shell (the host app
+# injects it into agent shells; it is NOT in HKCU/Machine environment), this exe runs AS NODE:
+# bare launch exits 0 with 0 bytes of output and zero processes (looks like a held single-instance lock),
+# and `-v` prints a node version. Removing the variable makes the same exe start normally (5-6 processes).
+# So the child env must have it scrubbed first. Details: PITFALLS #109.
+$scrubbedElectronNode = $false
+if (Test-Path Env:ELECTRON_RUN_AS_NODE) {
+  Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
+  $scrubbedElectronNode = $true
+}
+if ($scrubbedElectronNode) { Write-Output 'scrubbed ELECTRON_RUN_AS_NODE for this launch (with it, the exe runs as node and exits 0 with no output)' }
 # Key resolution (10-19 tail: other agents reported "the two acting routes still answer no-key" - the real
 # cause was that the key only existed in this shell). Default behaviour: keep ONE key per machine in a file
 # other local agents can read; -Ephemeral keeps the old mint-and-forget behaviour.
