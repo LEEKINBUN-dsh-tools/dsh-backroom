@@ -42,7 +42,7 @@ function makeLoggerFace() {
 	return { face, exporters }
 }
 
-function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true, agentPresets, permissionPresets, workspaceController } = {}) {
+function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true, agentPresets, permissionPresets, workspaceController, workspaceRegistry } = {}) {
 	const table = new Map()
 	// 真宿主同形：`ctx.get('logger')` 取不到（10-04 现读 absent），只有 `ctx.logger` 属性拿得到
 	// ⇒ logger 一律**不进名字表**，改成属性 getter，让"属性回退"那半条路真被测到。
@@ -57,6 +57,7 @@ function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionContr
 	if (agentPresets) table.set('agentPresets', agentPresets)
 	if (permissionPresets) table.set('permissionPresets', permissionPresets)
 	if (workspaceController) table.set('workspaceController', workspaceController)
+	if (workspaceRegistry) table.set('workspaceRegistry', workspaceRegistry)
 	table.set('pluginInventory', { list: () => [{ id: 'backroom', enabled: true, fiberPhase: 'active' }] })
 
 	const effects = []
@@ -571,7 +572,10 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	assert.equal(mod.distroGate('', 'Ubuntu'), 'disabled')
 	assert.equal(mod.distroGate('Ubuntu, Debian', 'Ubuntu'), 'ok', '逗号两侧的空格要能吃掉')
 	assert.equal(mod.distroGate('Ubuntu', 'calc'), 'not-allowed-distro')
-	step('路径映射＋两把白名单闸：/mnt 两支、UNC 拼装、"没设＝disabled"、前缀按路径段判（E:/ab 不算 E:/a 之内）')
+	// 10-30：workspaceId 那一支会遇到 UNC 路径（WSL 工作区），白名单判定必须把反斜杠归一后再比
+	assert.equal(mod.rootGate('\\\\wsl.localhost\\Ubuntu', '//wsl.localhost/Ubuntu/home/ruler'), 'ok', 'UNC 工作区路径要能被同一条根放行')
+	assert.equal(mod.rootGate('\\\\wsl.localhost\\Ubuntu', '//wsl.localhost/Ubuntu2/home/x'), 'outside-roots', '按路径段判，Ubuntu2 不算 Ubuntu 之内')
+	step('路径映射＋两把白名单闸：/mnt 两支、UNC 拼装、"没设＝disabled"、前缀按路径段判（E:/ab 不算 E:/a 之内；UNC 工作区同形）')
 }
 
 // ── 13. 红线哨兵（把本窗裁定与这次事故都钉成会抛错的闸）───────────────────
@@ -609,6 +613,7 @@ const FACE_ALLOWED = {
 	wc: ['create', 'archiveSession', 'unarchiveSession'], // 工作区面：建工作区（10-09）＋收回自己造的会话（10-19）
 	ap: ['list'], // 预设名册面：只许读名册（defaultId 是 getter，不带括号）
 	pp: ['catalog'], // 权限档面：**只许读 catalog**，改档一律红
+	wr: ['get', 'list'], // 工作区注册面：只许按 id 取/列（10-19 加 workspaceId 那一支要用它拿路径判白名单）
 }
 const faceMethods = (code, alias) => [...new Set([...code.matchAll(new RegExp(`\\b${alias}\\.([a-zA-Z]+)\\(`, 'g'))].map((m) => m[1]))]
 for (const [alias, allowed] of Object.entries(FACE_ALLOWED)) {
@@ -686,7 +691,7 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 	const saved = Object.fromEntries(ENVS.map((k) => [k, process.env[k]]))
 	// 名册里有激活失败的那一枚（官面 list 的自陈就是"Every current declaration, including activation failures"）
 	const ROSTER = [{ id: 'standard', name: '标准' }, { id: 'ptc', name: 'PTC' }, { id: 'cordis', name: '创造', broken: 'activation failed: missing module' }]
-	const boot = ({ env = {}, roster = ROSTER, spend = 0, presetValue = 'standard', renameThrows = false, noPresets = false } = {}) => {
+	const boot = ({ env = {}, roster = ROSTER, spend = 0, presetValue = 'standard', renameThrows = false, noPresets = false, workspaces = null } = {}) => {
 		for (const k of ENVS) { if (env[k] === undefined) delete process.env[k]; else process.env[k] = env[k] }
 		const calls = []
 		const sc = {
@@ -709,6 +714,10 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 			agentPresets: noPresets ? undefined : { list: async () => roster, defaultId: 'standard' },
 			// 假 catalog 用**本机实测那一形**：defaultPreset 就是最宽那一档（第 20 步要验的正是"这一格会被回显出来"）
 			permissionPresets: { names: ['standard', 'danger-full-access'], catalog: () => ({ options: [{ value: 'standard', name: '标准' }, { value: 'danger-full-access', name: 'danger-full-access' }], defaultPreset: 'danger-full-access' }) },
+			workspaceRegistry: workspaces === null ? undefined : {
+				async get(id) { return workspaces.find((w) => w.workspaceId === id) || null },
+				async list() { return workspaces },
+			},
 			workspaceController: {
 				// 官面这一发回的是**整个归档集**（真宿主实测 12 枚，含用户早就归档掉的 11 枚），
 				// 夹具也按这一形回，否则"我归档了几枚"会被读成"归档集有几枚"（10-19 真宿主那发就是这么露出来的）
@@ -760,6 +769,26 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_ALLOW_PRESETS': 'standard' } })
 		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', agentPreset: 'ptc', caller: 'x' }))
 		assert.equal(r.json.reason, 'not-allowed-preset')
+
+		// 闸 B'（10-30 加）：workspaceId 那一支——"绑定工作区"类测试要的是它，不是 cwd
+		f = boot({ env: goodEnv, workspaces: [{ workspaceId: 'ws-in', path: 'D:/Temp/proj-a' }, { workspaceId: 'ws-out', path: 'E:/elsewhere' }] })
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ workspaceId: 'ws-missing' }))
+		assert.equal(r.status, 404)
+		assert.equal(r.json.reason, 'workspace-not-found')
+		ledger = await callAs(f.sessions, 'GET', `?key=${KEY}`)
+		assert.equal(ledger.json.quota.used, 0, 'workspace 找不到也要把名额退回')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ workspaceId: 'ws-out' }))
+		assert.equal(r.status, 403)
+		assert.equal(r.json.reason, 'cwd-outside-roots', 'workspaceId 也要按它那条路径过白名单，绝不因为"它已在工作区列表里"就放行')
+		assert.equal(r.json.workspacePath, 'E:/elsewhere')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ cwd: 'D:/Temp/a', workspaceId: 'ws-in' }))
+		assert.equal(r.status, 400)
+		assert.equal(r.json.reason, 'cwd-and-workspace-id', '两个都给＝官面互斥，要拒')
+		r = await post(f.sessions, `?key=${KEY}`, JSON.stringify({ workspaceId: 'ws-in', agentPreset: 'standard', caller: 'ws' }))
+		assert.equal(r.status, 200, `workspaceId 那一支该放行：${JSON.stringify(r.json)}`)
+		assert.deepEqual(f.calls.filter((c) => c.m === 'create').pop().request, { agentPreset: 'standard', workspaceId: 'ws-in' }, 'workspaceId 那一支不许把 cwd 也塞进 request')
+		assert.equal(r.json.joinedWorkspaceId, 'ws-in')
+		assert.equal(r.json.ownedCwd, null)
 
 		// 闸 C 名额：默认 3/小时；用完就 429，且不碰官面
 		f = boot({ env: { ...goodEnv, 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR': '1' } })
