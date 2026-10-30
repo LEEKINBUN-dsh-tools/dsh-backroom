@@ -72,6 +72,39 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
 - Sending is bounded: 6 prompts/minute, text ≤4000 chars, wait 2–120 s; creating is 3/hour; budget defaults to 60,000 tokens (≈4 measured turns).
 - Prompting an archived session → 403 (it left `owned`); archiving **someone else's** session → 403 `not-owned`; an unreadable permission preset is reported (`permissionGate:"unknown-preset"`) but does not block.
 
+### Debugging inside the built-in browser (web instance + composer injection, proven 10-30)
+
+Usually lighter than opening the desktop app: start **your own** `--profile web` instance, open its token URL in the built-in browser, and inject into the composer from in-page JS. Three facts decide the approach: **the composer is Lexical** (`data-lexical-editor="true"`) so `execCommand` returns false and the text stays empty; **a CLI `web` instance has no Chromium**, therefore no CDP to attach to; **`contenteditable="false"` until a workspace is selected**.
+
+```bash
+# 1) start an instance (it creates the workspace and prints the url; you export the key, the tool never reads ~/.dsh)
+export SENSANOVA_TOKEN_PLAN_API_KEY=<same value the desktop uses>
+node dsh-backroom/tools/web-debug.mjs start \
+  --home D:/Temp/dsh-web-debug/home --workspace D:/Temp/dsh-web-debug/ws \
+  --port 3981 --key-env SENSANOVA_TOKEN_PLAN_API_KEY \
+  --preset-file <a copy of the desktop profile's cordis.patch.yml>   # makes new sessions land on sensenova
+# 2) open the printed url in the built-in browser, dismiss the two first-run modals, select the workspace
+# 3) print the injection snippet (ONE beforeinput only; adding input doubles the text)
+node dsh-backroom/tools/web-debug.mjs snippet
+# 4) clean up
+node dsh-backroom/tools/web-debug.mjs stop --home D:/Temp/dsh-web-debug/home
+```
+
+The core of the injection (`snippet` prints the full version):
+
+```js
+const ed = document.querySelector('[contenteditable][data-lexical-editor]');
+ed.focus();
+const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false);
+const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+ed.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: 'reply with one word', bubbles: true, cancelable: true, composed: true }));
+[...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label')||'') === '发送消息').click();
+```
+
+Three traps: `execCommand` never works on Lexical; dispatching **both** `beforeinput` and `input` doubles the text (measured `HELLO-BHELLO-B`); and `innerWidth/innerHeight=0` / `visibilityState:"hidden"` do **not** block this JS path (they only block trusted click/hover/screenshots).
+
+Measured on this machine: inject → send → `sensenova / DeepSeek V4 Flash` replied **“好” in 16 s**, **9.4K tok**; the tool's `start` returned in **5.7 s** with the workspace already created. **Bounds**: the temp home must live outside the repo (the tool refuses `--home` under `~/.dsh`), `stop` only kills the pid it recorded, and nothing touches your desktop app or `~/.dsh`.
+
 ### Why the constraints changed axis (this paragraph answers "isn't your safety rule a fake?")
 
 The user's challenge, verbatim: *"you send to dsh and it spends money, versus dsh spending money itself — isn't that the same? Is 'never give an arbitrary session a button that spends your quota' safety, or laziness?"* **On the money axis he is right**, and the old red line was mis-named: spending is not asymmetric — the bill lands in the same pocket either way. What actually moves out of his hands is three other things: **which directory the session is attached to, which permission preset is in force, and whether what got created can be taken back**. So the constraint changed axis instead of being dropped — five gates, each one an **exported pure function** (unit-tested, not "we'll be careful"):

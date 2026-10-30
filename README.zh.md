@@ -73,6 +73,41 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/sessions?key=$K" -H 'content-t
 
 
 
+### 在内置浏览器里调试（web 实例 + composer 注入，10-30 实测通）
+
+比开桌面端省事的一条路：起一枚**你自己的** `--profile web` 实例，在内置浏览器里打开它的 token URL，用页内 JS 往 composer 里注入。三个事实定了做法：**composer 是 Lexical**（`data-lexical-editor="true"`）⇒ `execCommand` 返回 false、正文恒空；**CLI `web` 实例没有 Chromium** ⇒ 没有 CDP 可连；**没选工作区时 `contenteditable="false"`** ⇒ 先选工作区。
+
+```bash
+# 1) 起实例（自动建工作区、打印 url；key 由你先 export，工具不读 ~/.dsh）
+export SENSANOVA_TOKEN_PLAN_API_KEY=<你的值>          # 值与桌面端同一枚
+node dsh-backroom/tools/web-debug.mjs start \
+  --home D:/Temp/dsh-web-debug/home --workspace D:/Temp/dsh-web-debug/ws \
+  --port 3981 --key-env SENSANOVA_TOKEN_PLAN_API_KEY \
+  --preset-file <桌面 profile 的 cordis.patch.yml>      # 让新会话落到 sensenova（否则默认 deepseek-official）
+# 2) 内置浏览器打开它打印的 url → 点掉两层首启模态 → 在页面上选中工作区
+# 3) 取注入片段（只发一发 beforeinput；再发 input 会翻倍）
+node dsh-backroom/tools/web-debug.mjs snippet
+# 4) 收尾
+node dsh-backroom/tools/web-debug.mjs stop --home D:/Temp/dsh-web-debug/home
+```
+
+注入那一段的核心（完整版由 `snippet` 打印）：
+
+```js
+const ed = document.querySelector('[contenteditable][data-lexical-editor]');
+ed.focus();
+const r = document.createRange(); r.selectNodeContents(ed); r.collapse(false);
+const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+ed.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: '只回一个字：好', bubbles: true, cancelable: true, composed: true }));
+[...document.querySelectorAll('button')].find(b => (b.getAttribute('aria-label')||'') === '发送消息').click();
+```
+
+三条坑：① `execCommand` 对 Lexical 永远无效；② `beforeinput` 与 `input` **各发一次会把文字翻倍**（实测 `HELLO-BHELLO-B`）；③ `innerWidth/innerHeight=0`、`visibilityState:"hidden"` **不阻止**这条 JS 路（只挡受信任的 click/hover/截图）。
+
+实测（本机）：注入 → 发送 → `sensenova / DeepSeek V4 Flash` **16 秒回「好」**、用量 **9.4K tok**；工具 `start` 实测 **5.7 s** 返回并自动建好工作区。**边界**：临时 home 一律在仓外（工具会拒 `--home` 落在 `~/.dsh`），`stop` 只停它自己 pid 文件里那枚；不动你的桌面端、不写 `~/.dsh`。
+
+
+
 ### 约束为什么换轴（这一段是回答"你的安全约束是不是伪命题"）
 
 **用户 10-19 的原话**：「你发给 dsh，让它花钱，和 dsh 自己花的钱，不是一样的吗？绝不给任意会话一个替你花钱的按钮是安全还是偷懒？」——**这句在"钱"这一维上是对的**，旧那句红线把风险说成了支出，而支出没有不对称（账单同一个口袋）。所以那句"绝不新建会话"**有一半是伪命题**，另一半（也是真的那一半）是另外三样：**这枚会话挂哪棵目录／生效哪一枚权限档／造出来能不能收回去**。约束因此**换轴而不取消**，五把闸每把都长在官面实物上、且都是**导出的纯函数**（夹具直验，不等真宿主）：
