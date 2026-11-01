@@ -101,15 +101,26 @@ function Get-BackendPorts {
 }
 
 function Find-BackendPort {
+  # 11-01 rc.5 fix: the same process now also listens on an API-key gateway surface that
+  # answers 401 {"error":...invalid_api_key} on EVERY path (and, early in boot, even passed
+  # a probe through). Status codes alone match it, so both branches must check the BODY:
+  #   probe-200 must carry the backroom shape; root-401 must carry the official sentence.
   foreach ($pt in (Get-BackendPorts)) {
     try {
       $r = Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $pt + '/dsh-backroom/probe') -TimeoutSec 3
-      if ($r.StatusCode -eq 200) { return $pt }
+      if ($r.StatusCode -eq 200 -and "$($r.Content)" -match 'dsh-backroom') { return $pt }
     } catch { }
     try {
       Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $pt + '/') -TimeoutSec 3 | Out-Null
     } catch {
-      if ($_.Exception.Response -and ([int]$_.Exception.Response.StatusCode) -eq 401) { return $pt }
+      if ($_.Exception.Response -and ([int]$_.Exception.Response.StatusCode) -eq 401) {
+        try {
+          $stream = $_.Exception.Response.GetResponseStream()
+          $body = ''
+          if ($stream) { $reader = New-Object System.IO.StreamReader($stream); $body = $reader.ReadToEnd(); $stream.Position = 0 }
+        } catch { $body = '' }
+        if ($body -match 'dsh web authentication required') { return $pt }
+      }
     }
   }
   return $null
