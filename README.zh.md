@@ -13,22 +13,24 @@
 
 ## 它做什么
 
-当前这一版是**探针档＋失败归因档＋会话窄口＋建会话档**：只有宿主半、**六枚端点**（四枚只读：`probe`／`logs`／`faults`／`presets`；两枚动手：`sessions` 建与收回、`session` 发一发——都要 env key），没有 UI，插件自身不写盘。
+当前这一版（**0.4**，2026-11-01 实战会话的六个痛点落成的形状）是**探针档＋失败归因档＋会话窄口＋建会话档＋声明档＋热重载档**：只有宿主半、**八枚端点**（五枚只读：`probe`／`logs`／`faults`／`presets`／`declarations`；三枚动手：`sessions` 建与收回、`session` 发一发、`reload` 按插件热重载——都要 env key），没有 UI。插件自身唯一的"写"是 `reload` 碰一下目标插件入口文件的 mtime（只动元数据，见下面 reload 那一行）。
 
 | 端点 | 回什么 |
 |---|---|
-| `GET /dsh-backroom/probe` | 逐枚服务面矩阵：每个名字把 `ctx.get(name, true)` 与 `ctx.get(name, false)` **分开**报成 `present(<类型>)` / `absent` / `threw: <原文>`，并列出该面自己的方法名；声明过与未声明依赖的属性访问结果各记一发；`hmr.getLinked()` 原样带出；**本插件 apply 之前缓冲里已有几条**（这一发就是"能不能回放"的判决）；node 版本、argv、`DSH_*` 变量**名**（不给值）、`ctx.fiber.state`。 |
-| `GET /dsh-backroom/logs?limit=&level=&contains=` | 日志尾：自 apply 起 `ctx.logger` 打的**全部**，外加插件们的 `console.error/warn`。`level` 收 `error\|info\|warn\|debug` 也收官面数值档 0..3。环形上限 4000 条，并如实报丢了几条。 |
+| `GET /dsh-backroom/probe` | 逐枚服务面矩阵：每个名字把 `ctx.get(name, true)` 与 `ctx.get(name, false)` **分开**报成 `present(<类型>)` / `absent` / `threw: <原文>`，并列出该面自己的方法名；声明过与未声明依赖的属性访问结果各记一发；`hmr.getLinked()` 原样带出；**本插件 apply 之前缓冲里已有几条**（这一发就是"能不能回放"的判决）；node 版本、argv、`DSH_*` 变量**名**（不给值）、`ctx.fiber.state`。**0.4 加了两格"加载副本自证"（11-01 痛点 3）**：`self`＝本插件自己的 realpath＋boot 代次（跨热重载累计，存 globalThis）＋本代 apply 时刻；`loadedPlugins`＝从官面 `loader.entries()` 枚举全部已加载条目，逐枚给 `baseUrl` 与 **`realpath`（真在跑的那一份）**，patch 插入的条目（baseUrl 是 profile 根）回退到按名解析并标 `realpathSource`；装了两份同名副本时 `duplicates` 直接点名两份路径。 |
+| `GET /dsh-backroom/logs?limit=&level=&contains=` | 日志尾：自 apply 起 `ctx.logger` 打的**全部**，外加插件们的 **console 全五枚 `error/warn/info/log/debug`**（11-01 痛点 4：插件 console.log 的诊断行——如 `WSL preset variants: 4/4 registered`——从此可见；就绪行自己也走一发 console.log 当活体自证）。速率闸**双档**：error/warn 一档、info/log/debug 一档，各 200 条/秒——信息洪峰打穿 normal 档时取证档不陪葬。`level` 收 `error\|info\|warn\|debug\|log` 也收官面数值档 0..3。环形上限 4000 条，并如实报丢了几条。 |
 | `GET /dsh-backroom/faults?limit=&dir=` | **崩溃归因**：读桌面端那两类崩溃件（`%APPDATA%\@deepseek-ai\dsh-desktop\logs\crash-*-host.log`／`-renderer.log`），逐份回"哪一枚**装侧包**的哪一帧（嫌疑）＋官面哪一帧抛的（它误触的那枚方法）＋成因行 `dsh: fatal …: TypeError [ERR_INVALID_ARG_TYPE] …` 与包裹行分开"；归不出嫌疑包的那份**各回各原因**（`renderer-crash`／`no-stack`／`kill-shaped`／`no-installed-bundle-frame`），不硬捏。**`kill-shaped` 这一档是 10-19 新加的**：`exit=-1`＋没有 `dsh: fatal` 行＋栈 ≤6 帧＝"后端子进程被从外面带走"那一形，与 `Stop-Process` 强杀留下的件**同形** ⇒ 归因装置**拒绝**把它算成任何插件的缺陷（`row.killShaped=true`）。10-19 那批"写面一开就挂"的说法就是被这一档否掉的：4 枚 host 件全 716 B 同字节，其中两枚的時刻与统筹自己的两次重启对得上。默认根＝桌面端那一棵；CLI 临时实例用 `DSH_BACKROOM_CRASH_LOGS=<目录>` 指开。`dir` 只准落在白名单根内（这枚端点免鉴权，不能当本机任意文件的读 oracle），越界回 **403**。 |
 | `GET`/`POST /dsh-backroom/session?session=&key=` | **会话窄口（默认全关）**：GET 读一枚登记会话的回合面——读的是官面投影袋里**确实在册**的两枚（`turnOutline` 回合数组、`sessionStats.turns`），回包给 `turnCount/lastTurn/lastResponseChars/asOfSeq/readable`；POST 往那枚**已登记的**会话发一条 prompt，`&wait=turn-end&timeoutMs=…` 等到"多出一回合且那一回合的 `response` 被 `turn/end` 填上"，回 `ended/endedClaim/turnStarted/assistantResponded/waitedMs`。只走官面 handler（`sessionController.prompt/projections`，**两枚参数 `request, signal`**）。10-09 桌面端端到端：一发 prompt 前后 `turnCount 1→2`、`asOfSeq 19→30`，日志里对应两条 `turn/end reason:"completed"`、回复两条。读不到判据时端点自报 `endedClaim:"unreadable"`，不把手上没证据写成"没结束"。⚠ 旧写法"读 `turnBoundary.lastTurn`"是猜的、实测**不在公共袋里**，已改判（正文＝`docs/PLUGIN-RULES.md` §H.5） |
 | `GET /dsh-backroom/presets` | **只读，不要 key**：现读官面 `agentPresets.list()` 的名册（`{id,name?,description?,order?,broken?}`，激活失败那枚连原因一起回）＋`defaultId`，外加 `permissionPresets.catalog()`（`names`／`options`／`defaultPreset`）与**当前五把闸的状态**；如果官面默认权限档就是最宽那一枚，这里会直接给一句 `permissionWarning`。10-19 真宿主现读名册 **8 枚**＝`standard`(默认)／`ptc`／`minimal`／`cordis`＋四枚 `wsl-*` ⇒ **档位名一律运行时读，不写死**（名册随订阅开关变）。 |
+| `GET /dsh-backroom/declarations` | **只读，不要 key（0.4 新增，11-01 痛点 1）**：把官面名册每枚声明的**体内文**摊开——`rows`＝解析后的 composition 行（`entryId/moduleName/enabled/condition?/fiberState?`，来自官面 `compositionInventory()`），`content`＝声明体 `plugins` 的 YAML 原文（来自官面 `readDocument(id)`，即 `@Remote("read")` 那条浏览器也在用的只读路）。哪枚面在这版宿主缺席就如实报 absent。**变体验证（wsl-\* 等）看这里**：11-01 实测一次 curl 拿到 `wsl-ptc` 的 37 行 composition＋7.4 KB YAML（含 dsh-wsl-workspace 物化的每个 file: 模块与其 config），全程零 lib 触碰、零重启——此前同一场验证要给已装 lib 打 dump 探针＋重启 4 次宿主。 |
+| `POST /dsh-backroom/reload?plugin=<包名>` | **动手档（0.4 新增，11-01 痛点 2，要 key）**：按插件热重载。机制＝**touch 目标插件已加载入口文件的 mtime**（`fs.utimesSync`，全仓唯一"写"面、只动元数据不碰内容）→ 官方 hmr watcher 路径 stash→partialReload→逐纤维换新 → 从自家捕获环捞官方 `reload plugin at` 日志行作证据（`evidence.found`，自重载时读 globalThis 上的**新**环）。**绝不调用 hmr 的任何方法**（`runReload` 只是队列串行器，包装它触发不了重载——asar 现读改判了任务原提案）。前置＝junction 安装＋hmr 观察根覆盖（11-01 已在桌面 profile 配好 `base: file:///E:/dsh-plugins, root: [dsh-backroom]`）；盖不住回 **409 `watcher-uncovered`** 并给出配置配方，绝不假装成功。11-01 真机实测：`evidence.found:true` 264 ms 命中官方行，PID 不变、`mountErrors:0`，连续 8 次改源码→热重载零重启；rate 6 发/分钟。 |
 | `GET`/`POST /dsh-backroom/sessions?key=` | **建会话档（10-19 用户改判「不需要切换模型，其他做完」）**：POST `{cwd \| workspaceId, agentPreset?, caller?}` 走官面 `sessionController.create(request)` 建一枚新会话（**模式在创建时一次带上**——官面 `agentPresets.select` 的 jsDoc 逐字写着只能"在第一回合之前"，所以已有会话改不了档）；POST `{op:'archive'\|'unarchive', sessionId}` 只能收**本插件自己建的**那几枚（走官面 `workspaceController.archiveSession`）。GET 回这枚进程的建设账（`owned`／`spendTokens`／名额／预算）。真宿主两发实测：建 `minimal` 与 `ptc` 各一枚、标题打成 `backroom:<caller>`、往新建会话里发一问 `ended:true`（`turn 0→1`、3.4 s、账本现刷 **18,100** token）、归档回 `archivedNow:true`＋`archivedSetSize:13`；越界 cwd ⇒ **403 `cwd-outside-roots`**、拿用户自己的会话去归档 ⇒ **403 `not-owned`**。 |
 
 ### 给其他 agent 的一页用法（怎么发现它／调用格式／env／局限）
 
-**它怎么被发现**（按可靠度排）：① dsh 会话里的模型每轮都看得见工具名 ⇒ 工具面里有 **`backroom_entry`**（只读，回 `baseUrl`＋六枚端点调用格式＋每把闸＋硬局限）；② 任何本机进程都能 `GET /dsh-backroom/presets`（**不要 key**）；③ 本 README 的端点表。
+**它怎么被发现**（按可靠度排）：① 一条命令：`node <本包>/tools/discover.mjs`——输出 `{baseUrl, port, backroom, keyFile, key, routes}` 的 JSON（端口判据带**正文**校验：probe-200 必须含 backroom 形状、root-401 必须是官面那句话；宿主没起时回 `ok:false`＋人话＋退出码 1，绝不空输出）；② dsh 会话里的模型每轮都看得见工具名 ⇒ 工具面里有 **`backroom_entry`**（只读，回 `baseUrl`＋八枚端点调用格式＋每把闸＋硬局限）；③ 任何本机进程都能 `GET /dsh-backroom/presets`（**不要 key**）；④ 本 README 的端点表。
 
-**认 baseUrl**（0.2.1-rc.2 起端口随机）：在 `DeepSeek Harness.exe` 那一族 PID 的监听口里，找 `GET /dsh-backroom/probe` 回 **200** 的那一枚；或直接跑启动器，它会打印 `backend port = …`。**别猜 0.2.0 那个写死的端口**——新版那一口永远没人听（`PITFALLS.md #107`）。
+**认 baseUrl**（0.2.1-rc.2 起端口随机）：在 `DeepSeek Harness.exe` 那一族 PID 的监听口里，找 `GET /dsh-backroom/probe` 回 **200** 的那一枚；或直接跑启动器，它会打印 `backend port = …`。**别猜 0.2.0 那个写死的端口**——新版那一口永远没人听（`PITFALLS.md #107`）。 **⚠ rc.5 新增的一枚坑（11-01 实测）**：同一进程还监听一枚 **API-key 网关面**（OpenAI 形 401 `invalid_api_key`，所有路径都回）——只看"root 回 401"会把**它**认成后端（启动器当天就认错过一次：`8326` 是网关、真后端是 `7145`）。判据必须带**正文**：probe-200 要含 backroom 形状、root-401 要含官面那句原话；`tools/discover.mjs` 与修好的启动器都已经是这个判法。
 
 **最小调用序列**（`$P`＝后端端口，`$K`＝启动器打印的那把 key）：
 
@@ -138,7 +140,7 @@ ed.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: 
 
 **日常怎么用（安全优先，也省事）**
 
-- 平时：照常点图标启动 dsh。门是关的，四枚只读端点照用。
+- 平时：照常点图标启动 dsh。门是关的，五枚只读端点照用。
 - 要动手那一发时（发消息或建会话）：跑一次启动器，它现铸一枚一次性 key、认出后端端口、把要粘的 curl 全打印出来（不落盘、不进注册表、退出就没了）。
 
 ```powershell
@@ -166,8 +168,8 @@ powershell -File E:\dsh-plugins\dsh-backroom\tools\start-desktop-with-mouth.ps1 
 | 工具名 | 干什么 | 要不要开关 |
 |---|---|---|
 | `backroom_probe` | 宿主形状：可达矩阵、本插件各项计数（含会话入口的拒绝账） | 不要，只读 |
-| **`backroom_entry`** | **入口卡**：后端口怎么认、六枚端点调用格式、每把 env 闸、以及硬局限（不切模型／不是工具／归档只是隐藏）。**别的 agent 要靠这一枚发现这个入口**——工具名是模型每轮真正看得见的东西 | 不要，只读 |
-| `backroom_logs` | 宿主日志尾（`limit/level/contains`） | 不要，只读 |
+| **`backroom_entry`** | **入口卡**：后端口怎么认（含 rc.5 网关面的正文判据）、八枚端点调用格式、每把 env 闸、以及硬局限（不切模型／不是工具／归档只是隐藏）。**别的 agent 要靠这一枚发现这个入口**——工具名是模型每轮真正看得见的东西 | 不要，只读 |
+| `backroom_logs` | 宿主日志尾（`limit/level/contains`；console 全五枚） | 不要，只读 |
 | `backroom_faults` | 崩溃件归因（`limit/dir`） | 不要，只读 |
 | `backroom_workspace` | `list` 列工作区／`create` 建一枚（官面 `workspaceController.create`，已存在回 `created:false`） | **要**：`DSH_BACKROOM_WORKSPACE_ROOTS`（逗号/分号前缀名单）；没设＝`disabled` |
 | `backroom_wsl_workspace` | `distros/ls/check` 走 `dsh-wsl-workspace` 自己的 loopback 桥；`create` 按它客户端那条顺序拼（官面 create ＋ 它的 `registerWindows`／`setUser`） | `create` 要：`DSH_BACKROOM_WSL_DISTROS`；只读三档不要。**桥打去哪一枚端口**（10-19 改）＝`DSH_BACKROOM_BRIDGE_BASE` 显式给 > 自家路由被访问时 Host 头里那枚**环回** origin > 两样都没有就**一个字都不发**并回 `bridge-base-unknown`（旧写法回落到写死的 19387，新版那口上根本没东西 ⇒ 假"桥坏了"；`GET /dsh-backroom/probe` 的 `bridge` 格就是"为什么没发"的读数处） |
@@ -199,7 +201,7 @@ curl -s -X POST "http://127.0.0.1:$P/dsh-backroom/session?key=…&session=<登�
 拒绝按原因分档计数留在 `probe`/回包里（`session.denied`），不静默吞。**这一格花的是你的模型额度**，所以三件事绝不做：不铸 token（`authenticatedUrl` 哨兵照旧）、不新建会话、不绕过 allowlist。
 
 
-六枚路由都经 `webServer.register()` 挂在**插件自己的前缀**上，所以不需要应用的会话 cookie 就能读（与 `/dsh-chamber/*` 同形），并带 `Cache-Control: no-store`。**前四枚只读**（`probe`／`logs`／`faults`／`presets` 只读内存与文件，不写盘、不动会话）；**后两枚动手**——`session` 会花你的额度、`sessions` 会往你 profile 里长资产，所以都要 env key，`sessions` 还要另过五把闸（见上面那张"换轴"表）。
+八枚路由都经 `webServer.register()` 挂在**插件自己的前缀**上，所以不需要应用的会话 cookie 就能读（与 `/dsh-chamber/*` 同形），并带 `Cache-Control: no-store`。**前五枚只读**（`probe`／`logs`／`faults`／`presets`／`declarations` 只读内存、崩溃件与官面只读面）；**后三枚动手**——`session` 会花你的额度、`sessions` 会往你 profile 里长资产、`reload` 会触发官方热重载，所以都要 env key，`sessions` 还要另过五把闸（见上面那张"换轴"表），`reload` 另有 watcher 覆盖前置（见路由表那一行）。
 
 ```bash
 # 只读三枚：$P 是按上面那格认出来的后端端口（新版随机，别填 19387）
@@ -227,11 +229,11 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>    
 
 - **绝不调用 `connection.authenticatedUrl()`。** 那一枚能铸出带 `?token=` 的 URL，而它只要被兑换一次，就变成了对全部 29 本已发布 `/api` 命名空间的**读写**钥匙。这把钥匙被有意留在宿主进程内：本插件只报"够不够得到"，绝不把钥匙交出去。这条不是注释里的愿望——`test/probe-shape.mjs` 里有一枚会**真的红**的哨兵盯着它。
 - **会话那一格按 10-05 的裁定开成了窄口**（原裁定是"绝不碰任何会话"，用户当日改判「开全套窄口」⇒ 现在是"只对登记的会话发 prompt＋读回合面"）。仍然绝不做的是：不 `Session.append` 自定义事件类型（那会毒化整份 durable 日志，PITFALLS #1）、不 `create` 新会话、不 cancel、不切模型、不动队列、不铸 token。发出去的每一发都留痕（`requestId`＋时刻＋拒绝原因分档计数）。
-- **绝不杀/重启宿主、前三枚端点绝不写盘、这一版不放任何 UI 席位**（没有 `<style>`、没有面板、没有侧栏入口）。`faults` 那枚**只读**崩溃件目录；唯一会写盘的是命令行里的 `quarantine --apply`，它只动 `dsh.profile.bundles` 那一行、写前先在工作区外逐字备份、且默认是 dry-run。
+- **绝不杀/重启宿主、五枚只读端点绝不写盘、这一版不放任何 UI 席位**（没有 `<style>`、没有面板、没有侧栏入口）。`faults` 那枚**只读**崩溃件目录。会写盘的只有两处：命令行里的 `quarantine --apply`（只动 `dsh.profile.bundles` 那一行、写前先在工作区外逐字备份、默认 dry-run）与 0.4 的 `reload`（碰一下目标插件入口的 mtime，只动元数据——哨兵钉着"出现第二处写原语即红"）。
 
 ## 运行要求
 
-- 实测目标 dsh **0.2.0-rc.2**；宿主半是纯 ESM，只用 `node:util`／`node:fs`／`node:path` 三枚内置模块，无第三方依赖。归因逻辑住在本包 `tools/fault-triage.mjs`（已进 `package.json` 的 `files`，`file:` 拷贝才会带上它——少了那枚文件整包 import 失败）。
+- 实测目标 dsh **0.2.0-rc.2 / 0.2.1-rc.2 / 0.2.1-rc.5**（rc.5 为 11-01 全量实测：八枚路由逐枚 curl、reload 免重载、变体端到端）；宿主半是纯 ESM，只用 `node:` 内置模块，无第三方依赖。归因逻辑住在本包 `tools/fault-triage.mjs`（已进 `package.json` 的 `files`，`file:` 拷贝才会带上它——少了那枚文件整包 import 失败）。
 - 一个会加载 bundle 的 profile（`desktop` / `web`）。
 
 ## 安装
@@ -276,15 +278,19 @@ node tools/dsh-fault-triage.mjs restore --profile-dir … --from <备份件>    
 | `DSH_BACKROOM_WSL_DISTROS` | `backroom_wsl_workspace` 工具 | 那枚工具报 `disabled` |
 | `DSH_BACKROOM_BRIDGE_BASE` | `backroom_wsl_workspace` 工具 | 退回"自家路由被访问时的环回 origin"；两样都没有就一个字都不发 |
 | `DSH_BACKROOM_CRASH_LOGS` / `DSH_BACKROOM_SOURCE_ROOT` | `faults` | 默认桌面端那一棵 / 只按装侧包归因 |
+| `DSH_BACKROOM_PROFILE_DIR` | `reload` | 退回 `process.argv[3]`（桌面端进程形状里的 profile 目录）；CLI 形实例的 argv 形状不同或夹具场景用 env 显式指路 |
 
 ## 已知边界
 
-- **夹具绿 ≠ 真宿主读数。** `test/probe-shape.mjs` 跑在假 ctx / 真 `console` 对象上，证的是注册、过滤、环形上限、还原与红线哨兵（22 步）；它**不**证明任何关于正在跑的宿主的事实——那些只能来自 `GET /dsh-backroom/probe`，而且那一档是**端点回包**，永远不等于屏上帧。
+- **夹具绿 ≠ 真宿主读数。** `test/probe-shape.mjs` 跑在假 ctx / 真 `console` 对象上，证的是注册、过滤、环形上限、还原与红线哨兵（25 步）；它**不**证明任何关于正在跑的宿主的事实——那些只能来自 `GET /dsh-backroom/probe`，而且那一档是**端点回包**，永远不等于屏上帧。
 - **两枚靶会话的下落与那句"可回收"的边界**：`session-bfac01cd…`（`minimal`）与 `session-f8c3752b…`（`ptc`）都已 archive。官面原句是 *"Hide one known Session from Workspace grouping surfaces"* ⇒ **归档＝隐藏，不是删除**；盘上留下什么（sessions 树、projcache、attachments）本窗**没量化**，"侧栏是不是真看不见"也**只有屏帧档能证**、本窗没做。所以这一格只能写成"有官方隐藏通道、残留未量化"，**不许写成"已验证可回收"**（挂在版本账本 `PQ-05`）。
 - 日志尾从本插件 `apply()` 那一刻起算。更早的启动期日志能不能看到，取决于探针报的那一发"注册时缓冲里已有几条"（10-04 真宿主＝1 条，而那条正是早于我们 apply 的 `dsh-chamber` 行 ⇒ 缓冲确实能带回放），本插件不去伪造它没看见的东西。
-- **探针「只问名字，不动手」**（10-04 事故换来的第一条，正文 `PITFALLS.md #103`、约束 `docs/PLUGIN-RULES.md` §E5）：对外来的官面服务面，本插件只取 `typeof` 与方法名清单，**不调用它们的任何方法**。起因是我自己从探针里调了 `hmr.getLinked()`——那枚方法只在 ESM loader 钩子的现场成立，从 HTTP 处理器里调它会拿 `undefined` 当 url 走 `LoadCache.get`，**抛发生在 loader 的 tick 上、本端 try/catch 拦不到**，后端直接 `dsh: fatal load failure` 退出。探针里那一格现在写成 `not-called（…）` 的说明串，并由套件第 17 步用"出现 `getLinked(` 就红"的哨兵钉住。
+- **探针「只问名字，不动手」**（10-04 事故换来的第一条，正文 `PITFALLS.md #103`、约束 `docs/PLUGIN-RULES.md` §E5）：对外来的官面服务面，本插件只取 `typeof` 与方法名清单，**不调用它们的任何方法**。起因是我自己从探针里调了 `hmr.getLinked()`——那枚方法只在 ESM loader 钩子的现场成立，从 HTTP 处理器里调它会拿 `undefined` 当 url 走 `LoadCache.get`，**抛发生在 loader 的 tick 上、本端 try/catch 拦不到**，后端直接 `dsh: fatal load failure` 退出。探针里那一格现在写成 `not-called（…）` 的说明串，并由套件用"出现 `getLinked(` 就红"的哨兵钉住。0.4 起的豁免（逐枚都有现场安全性论证、且全部进套件的逐面白名单）：`agentPresets.list/readDocument/compositionInventory`（`readDocument` 是 `@Remote("read")`，`compositionInventory` 纯读声明行或 mount 树）、`loader.entries()`（纯同步枚举，官面 `pluginManager.listPlugins()` 的 @Remote 方法内部就是这么调的）。
 - **捕获面有三把界，这是同一次事故的第二条**（约束 §E5b）：① 只接管 `console.error`／`console.warn`——热路径 `log/info/debug` 不接（实测那一帧 28 行里 26 行走 `console.info`，`deepseek-account` 每发请求两发响应各一条）；② 速率闸 **200 条/秒**，超额丢弃并计数，`/logs` 回包里的 `rate` 格把 `reentrantSkips`／`rateDropped`／`captureErrors` 原样带出来；③ 逐参数封顶 **512 字符**、单条 **600 字符**，先各自 slice 再拼，不对整条渲染结果做全局正则。另有**重入闸**：渲染过程中再进来的那一发直接跳过（`util.inspect` 会调用对象自己的 `[util.inspect.custom]`，那里再打一条日志就是自递归）。注意：这三把界是卫生，**不是那次退出的成因**——成因是上面那条越界调用。
 - 所以这一档**是有意的近似**：洪峰期间的日志会被丢弃并计入 `rateDropped`。要完整取证就缩小窗口（`limit`／`contains`／`level`），别拿它当审计账本。
+- **key 与启动 env 耦合（11-01 备查，不改行为）**：你自己点图标启动的宿主没有 `DSH_BACKROOM_SESSION_KEY` ⇒ 三枚动手端点（sessions/session/reload）全部 `403 disabled`，只有经启动器（或任何你自己的带 env 启动）重启后才带上。这是"key 不落盘/不进注册表"设计的正确代价，**不是缺陷**——别把它当 bug 修（比如别把 key 写进用户环境变量）。
+- **reload 的两枚边界**：① 它只碰"目标插件已加载入口"的 mtime（`utimesSync`，全仓唯一写面，内容一字不动——套件哨兵钉着"写文件内容即红"）；② 生效前提是 hmr 观察根盖得住那份文件（junction 安装＋profile 补丁 `- id: hmr / config: { base, root }`，见 `docs/PLUGIN-RULES.md` §H.6.3 档 2），盖不住回 409 并给配方；**改 hmr 补丁本身要一次重启才生效**（watcher 是启动时装的）。
+- **declarations 依赖官面只读面**：`compositionInventory()` 与 `readDocument(id)` 是 0.2.1-rc.5 的 `agentPresets` 实物（`readDocument` 是 `@Remote("read")`）；更老/更新的宿主上缺席时该格如实 `absent`，不许当成"变体不存在"。
 - 环形尾由导出的 `createRing(limit)` 实现，默认 4000；淘汰算术在套件里用 `limit=5` 小规模直证——既不靠睡 21 秒填满，也不把默认值调大来凑测试。
 - **当前状态（10-19）**：这枚插件**装在用户自己的桌面端 profile 里并跑通了**，实测过两版：0.2.0-rc.2（后端 19387，10-09）与 **0.2.1-rc.2（后端随机，10-19 现读 `12469`／`12750`／`2495`）**。四枚端点全部实测应答；会话入口在真机端到端跑过 prompt，端点读数与独立介质（会话日志里的 `turn/end {reason:"completed"}`）逐一对上。开发期验证一律在**仓外临时实例**（自有 `DSH_HOME`、自有端口）做；真宿主那枚端口只在被授权的同步／重启里被动过——**改完源码要加载新字节仍需重启一次**，这是"会动手的那枚端点"带来的成本。
 - **10-19 后半窗的两枚靶会话（诚实账）**：`session-bfac01cd…`（`minimal`＝极简模式）与 `session-f8c3752b…`（`PTC` 模式），cwd 都是 `D:/Temp/backroom-ws`，标题 `backroom:qoder-coordinator*`，各发了一问（`ended:true`、`turn 0→1`、3.4 s、账本现刷 **18,100** token），随后都已 `archive`。**归档＝从分组面摘掉，不是删除**：盘上残留（`~/.dsh/sessions/**`、projcache、attachments）本窗**没量化**，这一格挂在 `docs/compat/VERSIONS/0.2.1-rc.2/MANIFEST.json` 的 `PQ-05`；"侧栏是不是真的看不见了"只有屏帧档能证，本窗没做 ⇒ **不许把这句读成"已验证可回收"**。
