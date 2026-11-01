@@ -42,11 +42,12 @@ function makeLoggerFace() {
 	return { face, exporters }
 }
 
-function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionController, tools = true, agentPresets, permissionPresets, workspaceController, workspaceRegistry } = {}) {
+function makeCtx({ logger, hmrPresent = true, hmrFace, blockPlanMode = true, sessionController, tools = true, agentPresets, permissionPresets, workspaceController, workspaceRegistry } = {}) {
 	const table = new Map()
 	// 真宿主同形：`ctx.get('logger')` 取不到（10-04 现读 absent），只有 `ctx.logger` 属性拿得到
 	// ⇒ logger 一律**不进名字表**，改成属性 getter，让"属性回退"那半条路真被测到。
-	if (hmrPresent) {
+	if (hmrFace) table.set('hmr', hmrFace)
+	else if (hmrPresent) {
 		table.set('hmr', { watchConfig() {}, getLinked() { return { linked: ['dsh-backroom'] } } })
 	}
 	table.set('profileContext', { dir: 'X', patchPath: 'Y' })
@@ -59,6 +60,13 @@ function makeCtx({ logger, hmrPresent = true, blockPlanMode = true, sessionContr
 	if (workspaceController) table.set('workspaceController', workspaceController)
 	if (workspaceRegistry) table.set('workspaceRegistry', workspaceRegistry)
 	table.set('pluginInventory', { list: () => [{ id: 'backroom', enabled: true, fiberPhase: 'active' }] })
+	// 11-01 痛点 3：loadedPlugins 要从官面 loader.entries() 枚举。夹具给两枚：一枚真文件
+	// （E:\dsh-plugins\dsh-backroom\lib\index.js＝本仓实物，realpath 必解析得出）、一枚不存在的
+	// URL（unresolvable 那一档也要被验到，不许静默消失）。
+	table.set('loader', { entries: () => [
+		{ id: 'dsh-backroom', options: { name: 'dsh-backroom' }, parent: { tree: { ctx: { baseUrl: 'file:///E:/dsh-plugins/dsh-backroom/lib/index.js' } } }, disabled: false, fiber: { state: 2 } },
+		{ id: 'dsh-ghost', options: { name: 'dsh-ghost' }, parent: { tree: { ctx: { baseUrl: 'file:///E:/nonexistent/nope/lib/index.js' } } }, disabled: false, fiber: { state: 2 } },
+	] })
 
 	const effects = []
 	const routes = []
@@ -122,7 +130,9 @@ assert.equal(mod.name, 'backroom')
 assert.deepEqual(mod.inject, ['webServer'])
 assert.equal(typeof mod.apply, 'function')
 assert.equal(typeof mod.createRing, 'function')
-step('宿主半导出 name/inject/apply/createRing（inject 只有 webServer，绝不硬依赖 logger）')
+assert.equal(typeof mod.reloadEvidenceLine, 'function', 'reload 证据行判据要导出（夹具直验）')
+assert.equal(typeof mod.pluginEntryCandidates, 'function', '插件入口候选要导出（夹具直验）')
+step('宿主半导出 name/inject/apply/createRing/reloadEvidenceLine/pluginEntryCandidates（inject 只有 webServer，绝不硬依赖 logger）')
 
 // ── 2. 环形淘汰算术：小规模直接证，不靠把默认上限调大 ──────────────────────
 {
@@ -135,36 +145,41 @@ step('宿主半导出 name/inject/apply/createRing（inject 只有 webServer，�
 }
 step('createRing：limit=5 投 8 枚 ⇒ size=5／dropped=3／末两枚确实是 l7,l8')
 
-// ── 3. 装载：路由 + exporter + console 只包 error/warn ─────────────────────
+// ── 3. 装载：路由 + exporter + console 包全五枚（11-01 用户裁定，双档速率闸兜洪峰）──
 const originalLog = console.log
 const originalError = console.error
 const originalWarn = console.warn
 const originalInfo = console.info
+const originalDebug = console.debug
 const { face: loggerFace, exporters } = makeLoggerFace()
 const { ctx, effects, routes } = makeCtx({ logger: loggerFace })
 mod.apply(ctx)
 
-assert.equal(routes.length, 6, `注册到的路由数=${routes.length}`)
-assert.deepEqual(routes.map((r) => r.path).sort(), ['/dsh-backroom/faults', '/dsh-backroom/logs', '/dsh-backroom/presets', '/dsh-backroom/probe', '/dsh-backroom/session', '/dsh-backroom/sessions'])
+assert.equal(routes.length, 8, `注册到的路由数=${routes.length}`)
+assert.deepEqual(routes.map((r) => r.path).sort(), ['/dsh-backroom/declarations', '/dsh-backroom/faults', '/dsh-backroom/logs', '/dsh-backroom/presets', '/dsh-backroom/probe', '/dsh-backroom/reload', '/dsh-backroom/session', '/dsh-backroom/sessions'])
 assert.ok(routes.every((r) => r.path.startsWith('/dsh-backroom/')))
 assert.ok(!routes.some((r) => r.path.startsWith('/api')), '绝不占用 /api 前缀（RULES §C4）')
 assert.equal(exporters.length, 1, 'ctx.logger.exporter 注册成功')
 const obs = globalThis.__backroomObservations
 assert.equal(obs.exporterState, 'registered')
-assert.equal(obs.routeRegistrations, 6)
+assert.equal(obs.routeRegistrations, 8)
 assert.equal(obs.mountErrors, 0, `mountErrors=${obs.mountErrors} lastError=${obs.lastError}`)
 assert.equal(obs.bufferLenAtRegister, 2, '记下注册时的缓冲长度，用来判"能不能回放"')
 assert.equal(obs.loggerFace, 'present-via-property', '真宿主同形：logger 走属性能拿到')
-assert.equal(obs.consolePatchState, 'patched(2:error/warn)', `实际=${obs.consolePatchState}`)
+assert.equal(obs.consolePatchState, 'patched(5:error/warn/info/log/debug)', `实际=${obs.consolePatchState}`)
 assert.notEqual(console.error, originalError, 'console.error 被包')
 assert.notEqual(console.warn, originalWarn, 'console.warn 被包')
-assert.equal(console.log, originalLog, '10-04 事故后收窄：热路径 console.log/info **不再**被接管')
-assert.equal(console.info, originalInfo, 'console.info 保持原样')
-step('装载形状：6 枚路由（4 枚只读：probe/logs/faults/presets＋2 枚动手：sessions 建归档／session 发消息，都要 env key，无 /api）＋exporter＋console 只包 error/warn 两枚')
+assert.notEqual(console.log, originalLog, '11-01 起全五枚都包（痛点 4）')
+assert.notEqual(console.info, originalInfo, 'console.info 也被包')
+assert.notEqual(console.debug, originalDebug, 'console.debug 也被包')
+assert.equal(obs.rateDroppedByTier.forensic, 0, '双档速率闸的账要在场')
+step('装载形状：8 枚路由（5 枚只读：probe/logs/faults/presets/declarations＋3 枚动手：sessions 建归档／session 发消息／reload 热重载，都要 env key，无 /api）＋exporter＋console 包全五枚')
 
 // ── 4. 两路日志同框，且 src 计到 obs 上 ────────────────────────────────────
 exporters[0].export({ sn: 10, ts: 1234, name: 'dsh-hmr', type: 'info', level: 1, args: ['reloading', { id: 'backroom' }] })
 exporters[0].export({ sn: 11, ts: 1235, name: 'shredder', type: 'error', level: 0, args: [new Error('detach failed')] })
+// 11-01 起套件自己的 step() console.log 也被捕获 ⇒ console 计数用**相对增量**，不写死绝对值
+const consoleBaseline = obs.consoleLines
 console.error('[backroom-marker] console path reached')
 
 const logsRoute = routeOf(routes, 'logs')
@@ -176,9 +191,9 @@ assert.ok(texts.some((t) => t.includes('reloading') && t.includes('backroom')), 
 assert.ok(texts.some((t) => t.startsWith('Error: detach failed')), 'Error 参数按 name: message 渲染')
 assert.ok(texts.some((t) => t.includes('[backroom-marker] console path reached')), 'console.error 那一路进得来')
 assert.ok(logs.json.lines.some((l) => l.src === 'console') && logs.json.lines.some((l) => l.src === 'logger'))
-assert.equal(obs.consoleLines, 1, `consoleLines=${obs.consoleLines}`)
+assert.equal(obs.consoleLines, consoleBaseline + 1, `consoleLines=${obs.consoleLines}（基线 ${consoleBaseline} 含套件自己的 step() 行）`)
 assert.equal(logs.json.rate.reentrantSkips, 0)
-step('两路日志同框：ctx.logger.exporter 与 console.error（计数各归各，consoleLines=1）')
+step('两路日志同框：ctx.logger.exporter 与 console.error（计数各归各，console 相对增量 +1）')
 
 // ── 5. level 过滤（数值档与名字两写）与坏值 ────────────────────────────────
 const onlyError = call(logsRoute, '/dsh-backroom/logs?level=error')
@@ -187,10 +202,22 @@ const alsoError = call(logsRoute, '/dsh-backroom/logs?level=0')
 assert.deepEqual(alsoError.json.lines.map((l) => l.sn), onlyError.json.lines.map((l) => l.sn))
 const badLevel = call(logsRoute, '/dsh-backroom/logs?level=bogus')
 assert.equal(badLevel.status, 400)
-assert.deepEqual(badLevel.json.allowed.sort(), ['debug', 'error', 'info', 'warn'])
+assert.deepEqual(badLevel.json.allowed.sort(), ['debug', 'error', 'info', 'log', 'warn'])
 const filtered = call(logsRoute, '/dsh-backroom/logs?contains=backroom-marker')
 assert.equal(filtered.json.lines.length, 1, `contains 命中数=${filtered.json.lines.length}`)
-step('level 收 0..3 与名字两写、坏值回 400 并点名合法档；contains 生效')
+step('level 收 0..3 与名字两写（11-01 起加 log）、坏值回 400 并点名合法档；contains 生效')
+
+// ── 5b. console.log／info／debug 三路进得来（11-01 痛点 4），level=log 过滤命中 ──
+console.log('[backroom-marker] console.log path reached')
+console.info('[backroom-marker] console.info path reached')
+console.debug('[backroom-marker] console.debug path reached')
+const onlyLog = call(logsRoute, '/dsh-backroom/logs?level=log&limit=50')
+assert.ok(onlyLog.json.lines.length >= 1 && onlyLog.json.lines.every((l) => l.type === 'log'), `level=log 应只收 console.log 路：${JSON.stringify(onlyLog.json.lines.map((l) => l.type))}`)
+const logs5 = call(logsRoute, '/dsh-backroom/logs?contains=backroom-marker&limit=50')
+const kinds5 = new Set(logs5.json.lines.map((l) => l.name))
+assert.ok(kinds5.has('console.log') && kinds5.has('console.info') && kinds5.has('console.debug'), `三路都要在场：${[...kinds5]}`)
+assert.ok(logs5.json.lines.every((l) => l.text.length <= 600), '封顶语义对 log/info 路同样成立')
+step('console 全五枚捕获：log/info/debug 三路进得来、level=log 只收方法名路、封顶照旧')
 
 // ── 6. 速率闸：一秒内灌 4100 条只收 RATE_LIMIT 条，其余计数说得出 ──────────
 exporters[0].export({ sn: 19, ts: 1239, name: 'rate-anchor', type: 'info', level: 1, args: ['anchor-before-flood'] })
@@ -253,8 +280,20 @@ assert.match(String(body.hmr.getLinked), /not-called/, '10-04 起：探针**不�
 assert.equal(body.buffer.len, 2, '注册前已在场的缓冲条数要说得出（回放能力的那一发读数）')
 assert.ok(body.buffer.head[0].includes('did not activate'), '缓冲头部文本可读＝启动告警能不能回放判得出来')
 assert.equal(body.fiberState, 2)
-assert.equal(body.plugin.shape, 'probe-only')
+assert.equal(body.plugin.shape, 'observability')
 assert.ok(body.host.node.startsWith('v') && Array.isArray(body.host.dshEnvNames))
+assert.ok(!JSON.stringify(body).includes('token='), '探针输出里绝不含 token')
+// 11-01 痛点 3：self 与 loadedPlugins——"加载了哪个副本"的通用答案
+assert.equal(body.self.face, 'ok')
+assert.ok(body.self.realpath.replace(/\\/g, '/').endsWith('dsh-backroom/lib/index.js'), `self.realpath=${body.self.realpath}`)
+assert.ok(body.self.generation >= 1, `boot 代次=${body.self.generation}`)
+assert.equal(body.loadedPlugins.face, 'ok')
+assert.equal(body.loadedPlugins.total, 2)
+const lpBackroom = body.loadedPlugins.plugins.find((p) => p.name === 'dsh-backroom')
+assert.equal(lpBackroom.realpath, body.self.realpath, '同一份文件：loadedPlugins 的 realpath 与 self 一致')
+const lpGhost = body.loadedPlugins.plugins.find((p) => p.name === 'dsh-ghost')
+assert.equal(lpGhost.realpath, 'unresolvable', '解析不到的要如实 unresolvable，不许编路径')
+assert.deepEqual(body.loadedPlugins.duplicates, [], '没有同名双副本时 duplicates 为空')
 assert.ok(!JSON.stringify(body).includes('token='), '探针输出里绝不含 token')
 const totalTested = body.services.length
 const present = body.services.filter((s) => String(s.strict).startsWith('present')).length
@@ -272,7 +311,7 @@ const degradedBody = degradedRes.json
 assert.equal(degradedBody.hmr.face, 'absent')
 assert.ok(degradedBody.plugin.loggerFace.startsWith('absent'))
 assert.equal(degradedBody.plugin.exporterState, 'not-attempted')
-assert.equal(degradedBody.plugin.routeRegistrations, 6, '取不到 logger 也要照样把六枚端点挂上（动手那两枚自己按 env 关门）')
+assert.equal(degradedBody.plugin.routeRegistrations, 8, '取不到 logger 也要照样把八枚端点挂上（动手那三枚自己按 env 关门）')
 assert.ok(degradedBody.plugin.consolePatchState.includes('already-wrapped'), '重复 apply 走"已包过就不再包"那一路')
 step('降级档：没有 logger／没有 hmr 时端点照挂、状态写成 absent；重复 apply 不叠第二层补丁')
 
@@ -332,6 +371,9 @@ for (const disposer of effects) {
 }
 assert.equal(console.error, originalError, 'effect 卸完 console.error 回到真原函数')
 assert.equal(console.warn, originalWarn, 'console.warn 同样还原')
+assert.equal(console.log, originalLog, 'console.log 也还原（11-01 起包全五枚）')
+assert.equal(console.info, originalInfo, 'console.info 同样还原')
+assert.equal(console.debug, originalDebug, 'console.debug 同样还原')
 assert.equal(obs.consolePatchState, 'restored')
 const tailBefore = call(logsRoute, '/dsh-backroom/logs?limit=1').json.tailTotal
 console.error('[backroom-marker] after restore')
@@ -541,7 +583,7 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	await settle()
 	const st1 = globalThis.__backroomObservations.toolsState
 	assert.match(String(st1.status), /^absent/, `没有 tools 服务时应报 absent，实际=${st1.status}`)
-	assert.equal(noTools.routes.length, 6, '工具面缺席不许带走那六枚路由')
+	assert.equal(noTools.routes.length, 8, '工具面缺席不许带走那八枚路由')
 	assert.equal(st1.registered.length, 0)
 
 	const withTools = makeCtx({})
@@ -550,7 +592,7 @@ step('写分支收尾：disposer 跑完后 error/warn 都回到真原函数、�
 	const st2 = globalThis.__backroomObservations.toolsState
 	assert.ok(/^import-failed/.test(String(st2.status)) || /^registered\(/.test(String(st2.status)),
 		`工具面状态只能是 import-failed 或 registered(n)，实际=${st2.status}`)
-	assert.equal(withTools.routes.length, 6, '工具注册失败也不许带走那六枚路由（整包不能被工具面带走）')
+	assert.equal(withTools.routes.length, 8, '工具注册失败也不许带走那八枚路由（整包不能被工具面带走）')
 	const captured = withTools.ctx.get('tools').__captured
 	if (/^import-failed/.test(String(st2.status))) assert.equal(captured.length, 0, 'import 失败时不该有任何一枚被注册')
 	await disposeAll(noTools); await disposeAll(withTools)
@@ -596,7 +638,10 @@ assert.ok(!/path:\s*'\/api/.test(codeOnly), '不许出现 /api 前缀路由（RU
 assert.ok(!/homedir\(\)/.test(codeOnly), '不读用户目录、不写 ~/.dsh（RULES §0）')
 assert.ok(!/replace\(\/\\s\+\//.test(codeOnly), '不许对整条日志文本做全局正则（10-04 拖死后端的那一步）')
 const consoleMethods = (codeOnly.match(/CONSOLE_METHODS = \[([^\]]*)\]/) || [])[1] || ''
-assert.ok(/'error'/.test(consoleMethods) && /'warn'/.test(consoleMethods) && !/'log'/.test(consoleMethods) && !/'info'/.test(consoleMethods), `console 只许包 error/warn，实际=[${consoleMethods}]；加回 log/info 要先过这条闸`)
+// 11-01 用户裁定扩全五枚（痛点 4）；三把闸（重入/双档速率/逐参数封顶）照搬。少一枚都红。
+for (const m of ['error', 'warn', 'info', 'log', 'debug']) {
+	assert.ok(consoleMethods.includes(`'${m}'`), `console 捕获面少了一枚：${m}（11-01 裁定＝全五枚）`)
+}
 assert.ok(/RATE_LIMIT = 200/.test(codeOnly), '速率闸默认值改大要留来源注（PITFALLS 那条"阈值不许调到刚好过门"）')
 // 10-04 那发的正面凭据是一条栈：`hmr.getLinked()` 在 ESM loader 的 tick 上抛 ⇒ 本端 try/catch 拦不住
 // ⇒ 后端 `dsh: fatal load failure` 退出。所以"探针只能问名字，不能动手"必须是会红的闸，不是口头纪律。
@@ -606,20 +651,25 @@ for (const forbidden of ['getLinked(', 'watchConfig(', 'runExclusive(', 'runRelo
 assert.ok(/'not-called/.test(codeOnly), 'hmr 那一格要写成 not-called 的说明串（把这次事故留在码里，不只是文档里）')
 // 会话窄口的五把闸也要交给闸，不靠"下次记得"：任一 env 名字从代码里消失＝那把闸被拆了，红。
 // 10-19 用户改判「不需要切换模型，其他做完」⇒ 名单里加上建会话那一档的四把新闸（少一枚就红，同旧形状）。
-for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS', 'DSH_BACKROOM_KEY_FILE']) {
+for (const gate of ['DSH_BACKROOM_SESSION_KEY', 'DSH_BACKROOM_SESSION_ALLOW', 'SESSION_RATE_LIMIT', 'SESSION_TEXT_LIMIT', 'SESSION_BODY_LIMIT', 'SESSION_WAIT_MAX_MS', 'DSH_BACKROOM_WORKSPACE_ROOTS', 'DSH_BACKROOM_WSL_DISTROS', 'DSH_BACKROOM_MAX_SESSIONS_PER_HOUR', 'DSH_BACKROOM_TOKEN_BUDGET', 'DSH_BACKROOM_ALLOW_PRESETS', 'DSH_BACKROOM_DENY_PRESETS', 'DSH_BACKROOM_KEY_FILE', 'DSH_BACKROOM_PROFILE_DIR']) {
 	assert.ok(codeOnly.includes(gate), `窄口／建会话的闸少了一枚：${gate} 不再出现在代码里`)
 }
 assert.equal((codeOnly.match(/\.prompt\(/g) || []).length, 1, '官面 prompt 只许有一个调用点（就在窄口 handler 里），探针那枚端点永远不许动它')
 assert.ok(/crypto\.randomUUID\(\)/.test(codeOnly), 'requestId 必须自带（官面靠它做幂等去重，少了就会重复入队）')
 assert.ok(/timingSafeEqual/.test(codeOnly), 'key 比较必须等时，不许用 ===')
+// 11-01 reload 那一格的"写"边界：全仓唯一的写面＝touch 目标插件入口的 mtime（utimesSync），
+// 且只许出现一次；出现第二种写原语（writeFile/appendFile/createWriteStream）＝红线，红。
+assert.equal((codeOnly.match(/utimesSync\(/g) || []).length, 1, 'utimesSync 恰好一处（reload 的 touch）')
+assert.ok(!/writeFileSync|appendFileSync|createWriteStream/.test(codeOnly), '插件半绝不写文件内容（唯一写面＝reload 的 mtime touch）')
 // 10-19 改判：旧哨兵写的是"绝不允许出现 session/create"，用户裁定换成**逐面白名单**＋owned 边界。
 // 判据从"看见 .create( 就红"换成"哪一枚面、调了哪一枚方法"——名字仍然一枚都不许多（这条替换的动因见 README「约束换轴」一节）。
 const FACE_ALLOWED = {
 	sc: ['create', 'prompt', 'projections', 'rename'], // 会话面：建／发／读／打标题
 	wc: ['create', 'archiveSession', 'unarchiveSession'], // 工作区面：建工作区（10-09）＋收回自己造的会话（10-19）
-	ap: ['list'], // 预设名册面：只许读名册（defaultId 是 getter，不带括号）
+	ap: ['list', 'compositionInventory', 'readDocument'], // 预设名册面：11-01 加声明档的两枚官面只读面（compositionInventory 纯读、readDocument=@Remote("read")）
 	pp: ['catalog'], // 权限档面：**只许读 catalog**，改档一律红
 	wr: ['get', 'list'], // 工作区注册面：只许按 id 取/列（10-19 加 workspaceId 那一支要用它拿路径判白名单）
+	loader: ['entries'], // loader 面：11-01 加 entries（纯同步枚举；pluginManager 的 @Remote listPlugins 内部就是这么调的）
 }
 const faceMethods = (code, alias) => [...new Set([...code.matchAll(new RegExp(`\\b${alias}\\.([a-zA-Z]+)\\(`, 'g'))].map((m) => m[1]))]
 for (const [alias, allowed] of Object.entries(FACE_ALLOWED)) {
@@ -663,7 +713,7 @@ assert.ok(mutated !== codeOnly, '对照件没替换成功＝这发对照是空�
 assert.ok(effectShapeGate.test(mutated), '退回 #99 旧形时块体闸必须红')
 // 官面那一形（块体但返回 disposer）不许被误伤
 assert.ok(!effectShapeGate.test("ctx.effect(() => () => { disposed = true }, 'x')"), '官面形状被误伤＝闸太粗')
-step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、console 只包 error/warn、速率默认 200、**四面逐面白名单（sc＝create/prompt/projections/rename、wc＝create/archiveSession/unarchiveSession、ap＝只 list、pp＝只 catalog ⇒ 改权限档与改活会话档位一律红）**、归档前必须有 owned 闸、create 恰两处、两枚阈值带实测标度、ctx.effect 不写块体、**窄口与建会话的 12 枚 env 名字一枚都不能少**，另含两发合成负对照（塞回 cancel／pp.set 必须红）')
+step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 append、不杀宿主、不占 /api、不做整串正则、**console 捕获面＝全五枚（11-01 裁定，少一枚红）**、速率默认 200、**五面逐面白名单（sc＝create/prompt/projections/rename、wc＝create/archiveSession/unarchiveSession、ap＝list/compositionInventory/readDocument、pp＝只 catalog、loader＝只 entries）**、归档前必须有 owned 闸、create 恰两处、两枚阈值带实测标度、ctx.effect 不写块体、**窄口与建会话的 13 枚 env 名字一枚都不能少**、唯一写面＝reload 的 utimesSync（恰一处，写文件内容即红），另含两发合成负对照（塞回 cancel／pp.set 必须红）')
 
 // ── 18. WSL 桥基址：0.2.1-rc.2 起端口随机，"猜一个写死的端口"这种默认值必须被闸住 ─────
 {
@@ -992,6 +1042,139 @@ step('红线哨兵（剥注释后扫代码本体）：不外发 token、不 appe
 	assert.equal(mod.tokenSpend(null), 0)
 	assert.equal(mod.tokenSpend({ outputTokens: 'x', uncachedInputTokens: 5 }), 5, '非数值的桶跳过，不 NaN')
 	step('判定式直验：名册三档、名额窗口与 undo、预算 >=、档位两副面孔（被禁／读不到）、调用方封顶与消毒、token 四桶求和')
+}
+
+// ── 22. declarations 路由（11-01 痛点 1）：声明体内文来自官面只读面，缺席要如实降级 ──
+{
+	const ap = {
+		list: async () => [
+			{ id: 'standard', name: '标准', order: 1 },
+			{ id: 'wsl-ptc', name: 'PTC(WSL)', order: 5 },
+		],
+		compositionInventory: async () => [
+			{ id: 'standard', isDefault: true, rows: [{ entryId: 'a', moduleName: 'dsh-agent', enabled: true }] },
+			{ id: 'wsl-ptc', isDefault: false, rows: [{ entryId: 'w1', moduleName: 'dsh-wsl-workspace', enabled: true, fiberState: 2 }] },
+		],
+		readDocument: (id) => (id === 'wsl-ptc'
+			? Promise.resolve({ agentPreset: id, content: '- name: dsh-wsl-workspace\n  id: wsl-ptc\n' })
+			: Promise.reject(Object.assign(new Error('doc boom'), { code: 'agent-preset/not-found' }))),
+	}
+	const made = makeCtx({ agentPresets: ap })
+	mod.apply(made.ctx)
+	const route = routeOf(made.routes, 'declarations')
+	const res1 = await callAs(route, 'GET', '/dsh-backroom/declarations')
+	assert.equal(res1.status, 200, '只读档不要 key')
+	// no-store 由共享的 sendJson 写（logs 路由那格已断言过），callAs 的假 res 不收 headers
+	assert.equal(res1.json.faces.compositionInventory, 'ok')
+	assert.equal(res1.json.faces.readDocument, 'ok')
+	assert.equal(res1.json.declarations.length, 2)
+	const std = res1.json.declarations[0]
+	assert.equal(std.isDefault, true)
+	assert.deepEqual(std.rows, [{ entryId: 'a', moduleName: 'dsh-agent', enabled: true }])
+	assert.equal(std.content, null)
+	assert.match(std.contentFace, /threw/, 'readDocument 抛了要如实带出（不静默）')
+	const wsl = res1.json.declarations[1]
+	assert.equal(wsl.isDefault, false)
+	assert.equal(wsl.rows[0].moduleName, 'dsh-wsl-workspace')
+	assert.ok(wsl.content.includes('dsh-wsl-workspace'), '变体的声明体 YAML 要拿得到')
+	for (const disposer of made.effects) { if (typeof disposer === 'function') await disposer(); else if (disposer && disposer.dispose) await disposer.dispose() }
+
+	// 降级档：老宿主没有 compositionInventory/readDocument ⇒ faces absent、字段 null，不许编
+	const legacy = makeCtx({ agentPresets: { list: async () => [{ id: 'standard' }] } })
+	mod.apply(legacy.ctx)
+	const res2 = await callAs(routeOf(legacy.routes, 'declarations'), 'GET', '/dsh-backroom/declarations')
+	assert.equal(res2.status, 200)
+	assert.match(res2.json.faces.compositionInventory, /absent|no-compositionInventory-method/)
+	assert.match(res2.json.faces.readDocument, /absent|no-readDocument-method/)
+	assert.equal(res2.json.declarations[0].content, null)
+	assert.equal(res2.json.declarations[0].rows, undefined, 'inventory 缺席时 rows 不许编')
+	// 完全没有 agentPresets ⇒ face absent，端点照 200（不带走路由）
+	const absent = makeCtx({ agentPresets: undefined })
+	mod.apply(absent.ctx)
+	const res3 = await callAs(routeOf(absent.routes, 'declarations'), 'GET', '/dsh-backroom/declarations')
+	assert.equal(res3.status, 200)
+	assert.equal(res3.json.face, 'absent')
+	for (const bag of [legacy, absent]) for (const disposer of bag.effects) { if (typeof disposer === 'function') await disposer(); else if (disposer && disposer.dispose) await disposer.dispose() }
+	step('declarations 只读档：isDefault/rows/content 三格同框、readDocument 抛错如实带出、老宿主缺面降级为 absent、无名册也 200')
+}
+
+// ── 23. reload 路由（11-01 痛点 2）：key 门、watcher 覆盖判定、touch 只动 mtime、证据捞官方行 ──
+{
+	const fsMod = await import('node:fs')
+	const osMod = await import('node:os')
+	const tmpRoot = fsMod.mkdtempSync(path.join(osMod.tmpdir(), 'backroom-reload-'))
+	// 假插件：profile 形 node_modules/dsh-fakeplug/{package.json,lib/index.js}
+	const pkgDir = path.join(tmpRoot, 'node_modules', 'dsh-fakeplug')
+	fsMod.mkdirSync(path.join(pkgDir, 'lib'), { recursive: true })
+	fsMod.writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name: 'dsh-fakeplug', version: '1.0.0', main: 'lib/index.js' }))
+	fsMod.writeFileSync(path.join(pkgDir, 'lib', 'index.js'), '// fakeplug\n')
+	// 纯函数直验
+	assert.equal(mod.reloadEvidenceLine({ name: 'hmr', text: 'reload plugin at dsh-x/lib/index.js' }), true)
+	assert.equal(mod.reloadEvidenceLine({ name: 'hmr', text: 'failed to reload plugin at x' }), true, '失败行也算官方重载动静（要的是凭据，不是粉饰）')
+	assert.equal(mod.reloadEvidenceLine({ name: 'dsh-hmr', text: 'reload plugin at x' }), false, 'name 不对不认')
+	assert.equal(mod.reloadEvidenceLine({ name: 'hmr', text: 'watching %o' }), false)
+	assert.deepEqual(mod.pluginEntryCandidates('', 'x'), [], 'profileDir 为空＝无候选')
+	assert.deepEqual(mod.pluginEntryCandidates(tmpRoot, '../escape'), [], '带路径形状的名字一律拒')
+	assert.deepEqual(mod.pluginEntryCandidates(tmpRoot, 'dsh-fakeplug'), [path.join(pkgDir, 'lib', 'index.js')], 'lib/index.js 与 package.json main 相同要去重')
+
+	const KEY = 'rk'
+	process.env.DSH_BACKROOM_PROFILE_DIR = tmpRoot
+	const watchFace = () => ({ config: { base: `file:///${tmpRoot.replace(/\\/g, '/')}`, root: ['node_modules'] }, baseDir: tmpRoot })
+	const post = (route, qs) => callAs(route, 'POST', `/dsh-backroom/reload${qs}`)
+	const dispose = async (bag) => { for (const disposer of bag.effects) { if (typeof disposer === 'function') await disposer(); else if (disposer && disposer.dispose) await disposer.dispose() } }
+	try {
+		// 闸：key 门（不设＝disabled）
+		delete process.env.DSH_BACKROOM_SESSION_KEY
+		let made = makeCtx({ hmrFace: watchFace() })
+		mod.apply(made.ctx)
+		assert.equal((await post(routeOf(made.routes, 'reload'), '?plugin=dsh-fakeplug&waitMs=0')).json.reason, 'disabled')
+		process.env.DSH_BACKROOM_SESSION_KEY = KEY
+
+		// 名字形状闸 / entry-not-found / watcher-uncovered（root 空＝watching-nothing）
+		made = makeCtx({ hmrFace: watchFace() })
+		mod.apply(made.ctx)
+		const route = routeOf(made.routes, 'reload')
+		assert.equal((await post(route, `?key=${KEY}&plugin=..%2Fescape`)).status, 400, '路径形状的名字要拒')
+		assert.equal((await post(route, `?key=${KEY}&plugin=dsh-missing&waitMs=0`)).status, 404, '盘上没有入口要 404')
+		made = makeCtx({ hmrFace: { config: { base: '.', root: [] }, baseDir: tmpRoot } })
+		mod.apply(made.ctx)
+		const cov = await post(routeOf(made.routes, 'reload'), `?key=${KEY}&plugin=dsh-fakeplug&waitMs=0`)
+		assert.equal(cov.status, 409)
+		assert.equal(cov.json.reason, 'watcher-uncovered')
+		assert.equal(cov.json.watch.face, 'watching-nothing')
+		await dispose(made)
+
+		// 无官方行：touch 成功、内容一字不动、mtime 只进不退、evidence 如实 false（waitMs=0 ⇒ 不等）
+		const { face: lf1, exporters: ex1 } = makeLoggerFace()
+		made = makeCtx({ logger: lf1, hmrFace: watchFace() })
+		mod.apply(made.ctx)
+		const before = fsMod.statSync(path.join(pkgDir, 'lib', 'index.js')).mtimeMs
+		const ok = await post(routeOf(made.routes, 'reload'), `?key=${KEY}&plugin=dsh-fakeplug&waitMs=0`)
+		assert.equal(ok.status, 200, `实际=${JSON.stringify(ok.json)}`)
+		assert.ok(ok.json.touchedAt !== null, 'touch 要留时刻')
+		const after = fsMod.statSync(path.join(pkgDir, 'lib', 'index.js')).mtimeMs
+		// Windows 的 utimes 会把时刻截到整毫秒，可比先前读到的浮点 mtimeMs 早 ≤1ms（实测 flake 过一次）⇒ 留 2ms 粒度容差
+		assert.ok(after >= before - 2, `mtime 只进不退（±2ms 粒度容差）：${before} → ${after}`)
+		assert.equal(fsMod.readFileSync(path.join(pkgDir, 'lib', 'index.js'), 'utf8'), '// fakeplug\n', '内容一字不动')
+		assert.equal(ok.json.evidence.found, false, '没官方行 ⇒ 如实 no-evidence（绝不假装）')
+		await dispose(made)
+
+		// 证据正路：官方行在本 ctx 的轮询窗口内经 logger exporter 落进捕获环 ⇒ found true
+		const { face: lf2, exporters: ex2 } = makeLoggerFace()
+		made = makeCtx({ logger: lf2, hmrFace: watchFace() })
+		mod.apply(made.ctx)
+		setTimeout(() => ex2[0].export({ sn: 1, ts: Date.now(), name: 'hmr', type: 'info', level: 1, args: ['reload plugin at node_modules/dsh-fakeplug/lib/index.js'] }), 400)
+		const ok2 = await post(routeOf(made.routes, 'reload'), `?key=${KEY}&plugin=dsh-fakeplug&waitMs=5000`)
+		assert.equal(ok2.json.evidence.found, true, `官方行要被捞到：${JSON.stringify(ok2.json.evidence)}`)
+		assert.match(ok2.json.evidence.line, /reload plugin at/)
+		void ex1
+		await dispose(made)
+	} finally {
+		delete process.env.DSH_BACKROOM_SESSION_KEY
+		delete process.env.DSH_BACKROOM_PROFILE_DIR
+		fsMod.rmSync(tmpRoot, { recursive: true, force: true })
+	}
+	step('reload 动作档：key 门／名字形状闸／entry-not-found/watcher-uncovered 各回各话；covered 时 touch 成功且内容一字不动、mtime 只进不退；官方行落窗 ⇒ evidence.found=true，无行 ⇒ 如实 false')
 }
 
 console.log(`\nPASS dsh-backroom probe suite — ${passed} steps, 0 failures（夹具档，非真宿主读数）`)
